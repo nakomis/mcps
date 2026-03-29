@@ -10,47 +10,23 @@ Go to **https://trello.com/app-key**:
 - Copy the **API Key** (short hex string at the top)
 - Click **"Generate a Token"** and copy the **Token** (longer hex string)
 
-### 2. Set environment variables
-
-Add to `~/.zshenv`:
-
-```sh
-export TRELLO_API_KEY="your-api-key-here"
-export TRELLO_TOKEN="your-token-here"
-```
-
-Then reload: `source ~/.zshenv`
-
-### 3. Install the MCP
-
-Add to `~/.claude/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "trello": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "/Users/martinmu_1/repos/nakomis/mcps/trello-mcp",
-        "run",
-        "trello-mcp"
-      ],
-      "env": {
-        "TRELLO_API_KEY": "${TRELLO_API_KEY}",
-        "TRELLO_TOKEN": "${TRELLO_TOKEN}"
-      }
-    }
-  }
-}
-```
-
-### 4. Install dependencies
+### 2. Install dependencies
 
 ```sh
 cd ~/repos/nakomis/mcps/trello-mcp
 uv sync
 ```
+
+### 3. Register the MCP server
+
+```sh
+claude mcp add trello \
+  -e TRELLO_API_KEY=your-api-key-here \
+  -e TRELLO_TOKEN=your-token-here \
+  -- uv --directory ~/repos/nakomis/mcps/trello-mcp run trello-mcp
+```
+
+This stores the config in `~/.claude.json`. Restart Claude Code after running.
 
 ## Available Tools
 
