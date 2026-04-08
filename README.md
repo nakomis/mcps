@@ -9,6 +9,12 @@ MCP servers for use with Claude Code. All code is CC0 — no rights reserved.
 | [evernote-mcp](evernote-mcp/) | Read-only access to Evernote notes via exported .enex files |
 | [trello-mcp](trello-mcp/) | Read/write access to Trello boards, lists, and cards |
 
+## Support
+
+If you find this useful, consider buying me a coffee:
+
+[![Donate with PayPal](https://www.paypalobjects.com/en_GB/i/btn/btn_donate_SM.gif)](https://www.paypal.com/donate?hosted_button_id=Q3BESC73EWVNN)
+
 ## Installation
 
 Each server is a self-contained Python package managed with `uv`. See the individual server's README for setup instructions.
