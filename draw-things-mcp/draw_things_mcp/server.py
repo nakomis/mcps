@@ -14,6 +14,12 @@ mcp = FastMCP("draw-things-mcp")
 BASE_URL = "http://localhost:7860"
 DEFAULT_SAVE_DIR = Path.home() / "Pictures" / "draw-things-mcp"
 
+_OFFLINE_MSG = (
+    "Draw Things is not running. "
+    "Please ask the user to open Draw Things and enable the API server "
+    "(Settings → API Server), then retry."
+)
+
 
 def _post(endpoint: str, payload: dict) -> dict:
     with httpx.Client(base_url=BASE_URL, timeout=300) as client:
@@ -48,7 +54,7 @@ def check_connection() -> str:
             model = data.get("model", "unknown")
             return f"Draw Things is running. Current model: {model}"
     except httpx.ConnectError:
-        return "Cannot reach Draw Things. Make sure the API server is enabled in Draw Things → Settings → API Server."
+        return _OFFLINE_MSG
     except Exception as e:
         return f"Error: {e}"
 
@@ -88,7 +94,10 @@ def generate_image(
         "seed": seed,
     }
 
-    result = _post("/sdapi/v1/txt2img", payload)
+    try:
+        result = _post("/sdapi/v1/txt2img", payload)
+    except httpx.ConnectError:
+        return _OFFLINE_MSG
 
     images = result.get("images", [])
     if not images:
@@ -136,7 +145,10 @@ def image_to_image(
         "seed": seed,
     }
 
-    result = _post("/sdapi/v1/img2img", payload)
+    try:
+        result = _post("/sdapi/v1/img2img", payload)
+    except httpx.ConnectError:
+        return _OFFLINE_MSG
 
     images = result.get("images", [])
     if not images:
