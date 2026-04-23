@@ -346,6 +346,23 @@ def create_task(project_id: int, subject: str, user_story_id: int = None,
 
 
 @mcp.tool()
+def get_task(task_id: int) -> dict:
+    """Get full details of a task including description."""
+    t = _get(f"/tasks/{task_id}")
+    return {
+        "id": t["id"],
+        "ref": t["ref"],
+        "subject": t["subject"],
+        "description": t.get("description", ""),
+        "status": _extra(t, "status"),
+        "status_id": t.get("status"),
+        "user_story_id": t.get("user_story"),
+        "assigned_to": _extra(t, "assigned_to", "username"),
+        "is_closed": t.get("is_closed", False),
+    }
+
+
+@mcp.tool()
 def update_task(task_id: int, subject: str = None, description: str = None,
                 status_id: int = None, assigned_to: int = None) -> dict:
     """Update a task. Only provided fields are changed."""
