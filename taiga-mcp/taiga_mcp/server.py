@@ -29,6 +29,27 @@ def _get(path: str, **params) -> dict | list:
     return r.json()
 
 
+def _get_all(path: str, **params) -> list:
+    """GET a list endpoint, following Taiga's page-based pagination automatically."""
+    results = []
+    page = 1
+    while True:
+        r = httpx.get(f"{_base()}{path}", headers=_headers(),
+                      params={k: v for k, v in {**params, "page": page}.items()
+                              if v is not None},
+                      timeout=10)
+        r.raise_for_status()
+        page_data = r.json()
+        if not page_data:
+            break
+        results.extend(page_data)
+        total = r.headers.get("x-pagination-count")
+        if total and len(results) >= int(total):
+            break
+        page += 1
+    return results
+
+
 def _post(path: str, data: dict) -> dict:
     r = httpx.post(f"{_base()}{path}", headers=_headers(), json=data, timeout=10)
     r.raise_for_status()
@@ -141,13 +162,14 @@ def create_milestone(project_id: int, name: str,
 
 @mcp.tool()
 def list_user_stories(project_id: int, milestone_id: int = None,
-                      status_id: int = None) -> list[dict]:
+                      status_id: int = None, epic_id: int = None) -> list[dict]:
     """
     List user stories in a project.
-    Optionally filter by sprint (milestone_id) or status (status_id).
+    Optionally filter by sprint (milestone_id), status (status_id), or epic (epic_id).
+    Handles pagination automatically so all stories are returned.
     """
-    stories = _get("/userstories", project=project_id,
-                   milestone=milestone_id, status=status_id)
+    stories = _get_all("/userstories", project=project_id,
+                       milestone=milestone_id, status=status_id, epic=epic_id)
     return [
         {
             "id": s["id"],
@@ -164,6 +186,19 @@ def list_user_stories(project_id: int, milestone_id: int = None,
         }
         for s in stories
     ]
+
+
+@mcp.tool()
+def get_user_story_by_ref(project_id: int, ref: int) -> dict:
+    """
+    Get a user story by its project-scoped ref number (e.g. the '43' in /project/home-infrastructure/us/43).
+    Use this instead of get_user_story when you have a ref from a URL or the Taiga UI.
+    """
+    stories = _get_all("/userstories", project=project_id)
+    match = next((s for s in stories if s["ref"] == ref), None)
+    if match is None:
+        raise ValueError(f"No user story with ref {ref} found in project {project_id}")
+    return get_user_story(match["id"])
 
 
 @mcp.tool()
