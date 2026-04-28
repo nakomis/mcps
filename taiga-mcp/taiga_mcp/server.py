@@ -15,16 +15,46 @@ def _base() -> str:
     return url.rstrip("/") + "/api/v1"
 
 
+# Module-level token cache — refreshed automatically on 401.
+_token: str = ""
+
+# Users that are always added as Product Owner admins on every new project.
+_DEFAULT_MEMBERS = ["claude", "admin", "nakomis"]
+
+
+def _authenticate() -> str:
+    username = os.environ.get("TAIGA_USERNAME", "")
+    password = os.environ.get("TAIGA_PASSWORD", "")
+    if not (username and password):
+        raise RuntimeError("TAIGA_USERNAME and TAIGA_PASSWORD environment variables must be set")
+    r = httpx.post(
+        f"{_base()}/auth",
+        json={"type": "normal", "username": username, "password": password},
+        timeout=10,
+    )
+    r.raise_for_status()
+    return r.json()["auth_token"]
+
+
 def _headers() -> dict:
-    token = os.environ.get("TAIGA_AUTH_TOKEN", "")
-    if not token:
-        raise RuntimeError("TAIGA_AUTH_TOKEN environment variable must be set")
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    global _token
+    if not _token:
+        _token = os.environ.get("TAIGA_AUTH_TOKEN", "") or _authenticate()
+    return {"Authorization": f"Bearer {_token}", "Content-Type": "application/json"}
+
+
+def _refresh_and_headers() -> dict:
+    """Force a fresh token (called after a 401)."""
+    global _token
+    _token = _authenticate()
+    return {"Authorization": f"Bearer {_token}", "Content-Type": "application/json"}
 
 
 def _get(path: str, **params) -> dict | list:
-    r = httpx.get(f"{_base()}{path}", headers=_headers(),
-                  params={k: v for k, v in params.items() if v is not None}, timeout=10)
+    kw = {"params": {k: v for k, v in params.items() if v is not None}, "timeout": 10}
+    r = httpx.get(f"{_base()}{path}", headers=_headers(), **kw)
+    if r.status_code == 401:
+        r = httpx.get(f"{_base()}{path}", headers=_refresh_and_headers(), **kw)
     r.raise_for_status()
     return r.json()
 
@@ -34,10 +64,13 @@ def _get_all(path: str, **params) -> list:
     results = []
     page = 1
     while True:
-        r = httpx.get(f"{_base()}{path}", headers=_headers(),
-                      params={k: v for k, v in {**params, "page": page}.items()
-                              if v is not None},
-                      timeout=10)
+        kw = {
+            "params": {k: v for k, v in {**params, "page": page}.items() if v is not None},
+            "timeout": 10,
+        }
+        r = httpx.get(f"{_base()}{path}", headers=_headers(), **kw)
+        if r.status_code == 401:
+            r = httpx.get(f"{_base()}{path}", headers=_refresh_and_headers(), **kw)
         r.raise_for_status()
         page_data = r.json()
         if not page_data:
@@ -52,12 +85,16 @@ def _get_all(path: str, **params) -> list:
 
 def _post(path: str, data: dict) -> dict:
     r = httpx.post(f"{_base()}{path}", headers=_headers(), json=data, timeout=10)
+    if r.status_code == 401:
+        r = httpx.post(f"{_base()}{path}", headers=_refresh_and_headers(), json=data, timeout=10)
     r.raise_for_status()
     return r.json()
 
 
 def _patch(path: str, data: dict) -> dict:
     r = httpx.patch(f"{_base()}{path}", headers=_headers(), json=data, timeout=10)
+    if r.status_code == 401:
+        r = httpx.patch(f"{_base()}{path}", headers=_refresh_and_headers(), json=data, timeout=10)
     r.raise_for_status()
     return r.json()
 
@@ -71,6 +108,8 @@ def _versioned_patch(path: str, data: dict) -> dict:
 
 def _delete(path: str) -> None:
     r = httpx.delete(f"{_base()}{path}", headers=_headers(), timeout=10)
+    if r.status_code == 401:
+        r = httpx.delete(f"{_base()}{path}", headers=_refresh_and_headers(), timeout=10)
     r.raise_for_status()
 
 
@@ -80,6 +119,60 @@ def _extra(obj: dict, key: str, field: str = "name") -> str | None:
 
 
 # ── Projects ──────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def create_project(name: str, description: str = None, is_private: bool = True) -> dict:
+    """
+    Create a new Taiga project (Kanban + Epics + Wiki enabled by default).
+    Automatically adds claude, admin, and nakomis as Product Owner admins.
+    Returns the new project's id, name, slug, and default status IDs.
+    """
+    data: dict = {
+        "name": name,
+        "is_private": is_private,
+        "is_kanban_activated": True,
+        "is_backlog_activated": False,
+        "is_epics_activated": True,
+        "is_wiki_activated": True,
+    }
+    if description is not None: data["description"] = description
+    result = _post("/projects", data)
+    project_id = result["id"]
+
+    # Find the Product Owner role for this project
+    roles = _get(f"/roles", project=project_id)
+    po_role = next((r for r in roles if r["name"] == "Product Owner"), None)
+
+    # Add default members. Taiga's API has a "valid contact" restriction, so failures are
+    # expected when users haven't previously shared a project. _ensure_default_members
+    # can be called afterwards to add them via a direct DB path if needed.
+    added = []
+    if po_role:
+        existing_usernames = {m["username"] for m in result.get("members", [])}
+        for username in _DEFAULT_MEMBERS:
+            if username not in existing_usernames:
+                try:
+                    _post("/memberships", {
+                        "project": project_id,
+                        "role": po_role["id"],
+                        "username": username,
+                    })
+                    added.append(username)
+                except Exception:
+                    pass
+
+    return {
+        "id": result["id"],
+        "name": result["name"],
+        "slug": result["slug"],
+        "description": result.get("description", ""),
+        "us_statuses": [{"id": s["id"], "name": s["name"]}
+                        for s in result.get("us_statuses", [])],
+        "members": [{"id": m["id"], "username": m["username"], "full_name": m.get("full_name", "")}
+                    for m in result.get("members", [])],
+        "default_members_added": added,
+    }
+
 
 @mcp.tool()
 def list_projects() -> list[dict]:
@@ -121,6 +214,63 @@ def get_project(project_id: int) -> dict:
         "members": [{"id": m["id"], "username": m["username"], "full_name": m.get("full_name", "")}
                     for m in p.get("members", [])],
     }
+
+
+@mcp.tool()
+def ensure_project_defaults(project_id: int) -> dict:
+    """
+    Ensure a project has the standard defaults applied:
+    - Kanban, Wiki, and Epics activated
+    - claude, admin, and nakomis added as Product Owner admins
+
+    Safe to call on existing projects — idempotent. Use this after create_project
+    if the API's contact restriction prevented default members from being added,
+    or when picking up a story in a project that claude isn't yet a member of.
+    """
+    # Enable features
+    project = _get(f"/projects/{project_id}")
+    feature_updates = {}
+    for key in ("is_kanban_activated", "is_wiki_activated", "is_epics_activated"):
+        if not project.get(key):
+            feature_updates[key] = True
+    if feature_updates:
+        _patch(f"/projects/{project_id}", feature_updates)
+
+    # Add default members as Product Owners
+    roles = _get("/roles", project=project_id)
+    po_role = next((r for r in roles if r["name"] == "Product Owner"), None)
+
+    added, skipped = [], []
+    if po_role:
+        memberships = _get("/memberships", project=project_id)
+        existing = {m["user_data"]["username"] for m in memberships if m.get("user_data")}
+        for username in _DEFAULT_MEMBERS:
+            if username in existing:
+                skipped.append(username)
+                continue
+            try:
+                _post("/memberships", {"project": project_id, "role": po_role["id"], "username": username})
+                added.append(username)
+            except Exception as e:
+                skipped.append(f"{username} (error: {e})")
+
+    return {
+        "project_id": project_id,
+        "features_enabled": list(feature_updates.keys()),
+        "members_added": added,
+        "members_already_present": skipped,
+    }
+
+
+@mcp.tool()
+def update_project(project_id: int, name: str = None, description: str = None) -> dict:
+    """Update a project's name and/or description."""
+    data: dict = {}
+    if name is not None: data["name"] = name
+    if description is not None: data["description"] = description
+    result = _patch(f"/projects/{project_id}", data)
+    return {"id": result["id"], "name": result["name"], "slug": result["slug"],
+            "description": result.get("description", "")}
 
 
 # ── Milestones / Sprints ──────────────────────────────────────────────────────
@@ -218,14 +368,20 @@ def get_user_story(story_id: int) -> dict:
         "points": s.get("total_points"),
         "tags": [t[0] for t in s.get("tags", [])],
         "is_closed": s.get("is_closed", False),
+        "is_blocked": s.get("is_blocked", False),
+        "blocked_note": s.get("blocked_note", ""),
     }
 
 
 @mcp.tool()
 def create_user_story(project_id: int, subject: str, description: str = None,
                       status_id: int = None, milestone_id: int = None,
-                      assigned_to: int = None, tags: list[str] = None) -> dict:
-    """Create a new user story. Use get_project to find valid status_id values."""
+                      assigned_to: int = None, tags: list[str] = None,
+                      epic_id: int = None) -> dict:
+    """
+    Create a new user story. Use get_project to find valid status_id values.
+    Pass epic_id to link the story to an epic immediately after creation.
+    """
     data: dict = {"project": project_id, "subject": subject}
     if description is not None: data["description"] = description
     if status_id is not None: data["status"] = status_id
@@ -233,6 +389,8 @@ def create_user_story(project_id: int, subject: str, description: str = None,
     if assigned_to is not None: data["assigned_to"] = assigned_to
     if tags is not None: data["tags"] = [[t, None] for t in tags]
     result = _post("/userstories", data)
+    if epic_id is not None:
+        _post(f"/epics/{epic_id}/related_userstories", {"user_story": result["id"], "epic": epic_id})
     return {"id": result["id"], "ref": result["ref"], "subject": result["subject"]}
 
 
@@ -240,10 +398,12 @@ def create_user_story(project_id: int, subject: str, description: str = None,
 def update_user_story(story_id: int, subject: str = None, description: str = None,
                       status_id: int = None, milestone_id: int = None,
                       clear_sprint: bool = False, assigned_to: int = None,
-                      tags: list[str] = None) -> dict:
+                      tags: list[str] = None, is_blocked: bool = None,
+                      blocked_note: str = None) -> dict:
     """
     Update a user story. Only provided fields are changed.
     Pass clear_sprint=True to move the story back to the backlog.
+    Pass is_blocked=True and blocked_note to mark a story as blocked.
     """
     data: dict = {}
     if subject is not None: data["subject"] = subject
@@ -255,6 +415,8 @@ def update_user_story(story_id: int, subject: str = None, description: str = Non
         data["milestone"] = milestone_id
     if assigned_to is not None: data["assigned_to"] = assigned_to
     if tags is not None: data["tags"] = [[t, None] for t in tags]
+    if is_blocked is not None: data["is_blocked"] = is_blocked
+    if blocked_note is not None: data["blocked_note"] = blocked_note
     result = _versioned_patch(f"/userstories/{story_id}", data)
     return {"id": result["id"], "ref": result["ref"], "subject": result["subject"],
             "status": _extra(result, "status")}
@@ -455,6 +617,21 @@ def get_wiki_page(project_id: int, slug: str) -> dict:
     """Get the Markdown content of a wiki page by its slug."""
     page = _get("/wiki/by_slug", slug=slug, project=project_id)
     return {"id": page["id"], "slug": page["slug"], "content": page.get("content", "")}
+
+
+@mcp.tool()
+def create_wiki_page(project_id: int, slug: str, content: str) -> dict:
+    """Create a new wiki page. slug should be lowercase-kebab-case."""
+    page = _post("/wiki", {"project": project_id, "slug": slug, "content": content})
+    return {"id": page["id"], "slug": page["slug"]}
+
+
+@mcp.tool()
+def update_wiki_page(project_id: int, slug: str, content: str) -> dict:
+    """Update an existing wiki page by slug."""
+    existing = _get("/wiki/by_slug", slug=slug, project=project_id)
+    page = _patch(f"/wiki/{existing['id']}", {"content": content, "version": existing["version"]})
+    return {"id": page["id"], "slug": page["slug"]}
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
