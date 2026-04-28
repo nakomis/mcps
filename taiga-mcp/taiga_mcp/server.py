@@ -395,6 +395,13 @@ def create_user_story(project_id: int, subject: str, description: str = None,
 
 
 @mcp.tool()
+def add_story_to_epic(story_id: int, epic_id: int) -> dict:
+    """Link an existing user story to an epic."""
+    _post(f"/epics/{epic_id}/related_userstories", {"user_story": story_id, "epic": epic_id})
+    return {"story_id": story_id, "epic_id": epic_id, "linked": True}
+
+
+@mcp.tool()
 def update_user_story(story_id: int, subject: str = None, description: str = None,
                       status_id: int = None, milestone_id: int = None,
                       clear_sprint: bool = False, assigned_to: int = None,
