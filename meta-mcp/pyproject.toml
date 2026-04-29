@@ -1,0 +1,16 @@
+[project]
+name = "meta-mcp"
+version = "0.1.0"
+description = "Lazy-loading proxy MCP server — surfaces sub-MCPs on demand to keep Claude's context window small"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "tomli>=2.0.0",
+]
+
+[project.scripts]
+meta-mcp = "meta_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
