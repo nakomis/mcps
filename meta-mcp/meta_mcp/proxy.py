@@ -26,6 +26,7 @@ def _id() -> int:
 class SubMcp:
     name: str
     command: list[str]
+    env: dict[str, str] = field(default_factory=dict)
     process: asyncio.subprocess.Process | None = None
     initialised: bool = False
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -68,11 +69,14 @@ class SubMcp:
 
     async def _spawn(self) -> None:
         logger.info("Spawning sub-MCP '%s': %s", self.name, self.command)
+        import os
+        env = {**os.environ, **self.env} if self.env else None
         self.process = await asyncio.create_subprocess_exec(
             *self.command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         self.initialised = False
 

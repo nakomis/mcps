@@ -40,7 +40,11 @@ def _load_config() -> None:
     for entry in config.get("mcps", []):
         name = entry["name"]
         _descriptions[name] = entry["description"]
-        _registry[name] = SubMcp(name=name, command=entry["command"])
+        _registry[name] = SubMcp(
+            name=name,
+            command=entry["command"],
+            env=entry.get("env", {}),
+        )
 
 
 async def _shutdown_all() -> None:
@@ -109,12 +113,10 @@ async def call_mcp(name: str, tool: str, args: dict) -> str:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     _load_config()
-
-    async def _run():
-        _install_shutdown_handler()
-        await mcp.run_async()
-
-    asyncio.run(_run())
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.call_soon(lambda: _install_shutdown_handler())
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
