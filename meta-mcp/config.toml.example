@@ -1,0 +1,22 @@
+# meta-mcp configuration
+# Copy to config.toml and edit to match your environment.
+#
+# Each [[mcps]] entry defines one sub-MCP:
+#   name        — identifier used in describe_mcp / call_mcp
+#   description — one-line summary shown in list_mcps (keep it short)
+#   command     — shell command list to start the sub-MCP server
+
+[[mcps]]
+name = "oscilloscope"
+description = "oscilloscope waveform capture"
+command = ["python", "-m", "nakoscope_mcp"]
+
+[[mcps]]
+name = "ollama"
+description = "local LLM inference"
+command = ["npx", "-y", "@ollama/mcp"]
+
+[[mcps]]
+name = "draw-things"
+description = "local image generation"
+command = ["npx", "-y", "@draw-things/mcp"]
