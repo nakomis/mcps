@@ -99,10 +99,12 @@ def _patch(path: str, data: dict) -> dict:
     return r.json()
 
 
-def _versioned_patch(path: str, data: dict) -> dict:
-    """PATCH with Taiga's required optimistic-locking version field."""
-    current = _get(path)
-    data["version"] = current["version"]
+def _versioned_patch(path: str, data: dict, known_version: int = None) -> dict:
+    """PATCH with Taiga's required optimistic-locking version field.
+    Pass known_version to skip the extra GET when the caller already has it."""
+    if known_version is None:
+        known_version = _get(path)["version"]
+    data["version"] = known_version
     return _patch(path, data)
 
 
@@ -118,14 +120,32 @@ def _extra(obj: dict, key: str, field: str = "name") -> str | None:
     return info.get(field) if info else None
 
 
+def _get_comments(item_type: str, item_id: int) -> list[dict]:
+    """Fetch comments from the history endpoint for a story, issue, or task."""
+    entries = _get(f"/history/{item_type}/{item_id}")
+    return [
+        {
+            "id": e["id"],
+            "author": e.get("user", {}).get("username", ""),
+            "author_name": e.get("user", {}).get("name", ""),
+            "comment": e["comment"],
+            "created_at": e.get("created_at", ""),
+        }
+        for e in entries
+        if e.get("comment") and not e.get("is_hidden", False)
+    ]
+
+
 # ── Projects ──────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def create_project(name: str, description: str = None, is_private: bool = True) -> dict:
+def create_project(name: str, description: str = None, is_private: bool = True,
+                   prefix: str = None) -> dict:
     """
     Create a new Taiga project (Kanban + Epics + Wiki enabled by default).
     Automatically adds claude, admin, and nakomis as Product Owner admins.
-    Returns the new project's id, name, slug, and default status IDs.
+    Pass prefix (e.g. 'HOME') to set the Jira-style ticket prefix immediately.
+    Returns the new project's id, name, slug, prefix, and default status IDs.
     """
     data: dict = {
         "name": name,
@@ -161,10 +181,19 @@ def create_project(name: str, description: str = None, is_private: bool = True) 
                 except Exception:
                     pass
 
+    actual_prefix = None
+    if prefix:
+        tags_colors = dict(result.get("tags_colors") or {})
+        tags_colors[f"PREFIX-{prefix.upper()}"] = None
+        payload = [[k, v] for k, v in tags_colors.items()]
+        _patch(f"/projects/{project_id}", {"tags_colors": payload})
+        actual_prefix = prefix.upper()
+
     return {
         "id": result["id"],
         "name": result["name"],
         "slug": result["slug"],
+        "prefix": actual_prefix,
         "description": result.get("description", ""),
         "us_statuses": [{"id": s["id"], "name": s["name"]}
                         for s in result.get("us_statuses", [])],
@@ -172,6 +201,14 @@ def create_project(name: str, description: str = None, is_private: bool = True) 
                     for m in result.get("members", [])],
         "default_members_added": added,
     }
+
+
+def _extract_prefix(tags_colors: dict) -> str | None:
+    """Return the suffix of a PREFIX-xxx tag from a project's tags_colors dict, or None."""
+    for tag in (tags_colors or {}):
+        if tag.upper().startswith("PREFIX-"):
+            return tag[7:].upper()
+    return None
 
 
 @mcp.tool()
@@ -185,9 +222,29 @@ def list_projects() -> list[dict]:
             "slug": p["slug"],
             "description": p.get("description", ""),
             "is_private": p["is_private"],
+            "prefix": _extract_prefix(p.get("tags_colors", {})),
         }
         for p in projects
     ]
+
+
+@mcp.tool()
+def set_project_prefix(project_id: int, prefix: str) -> dict:
+    """
+    Set the Jira-style prefix for a project (e.g. HOME, BOOT).
+    Stored as a PREFIX-xxx tag in the project's tags_colors.
+    Replaces any existing PREFIX-xxx tag.
+    """
+    p = _get(f"/projects/{project_id}")
+    tags_colors = dict(p.get("tags_colors") or {})
+    for tag in list(tags_colors):
+        if tag.upper().startswith("PREFIX-"):
+            del tags_colors[tag]
+    tags_colors[f"PREFIX-{prefix.upper()}"] = None
+    # API expects a list of [name, colour] pairs, not a dict
+    payload = [[k, v] for k, v in tags_colors.items()]
+    result = _patch(f"/projects/{project_id}", {"tags_colors": payload})
+    return {"id": project_id, "prefix": prefix.upper(), "tags_colors_count": len(result.get("tags_colors", {}))}
 
 
 @mcp.tool()
@@ -351,9 +408,132 @@ def get_user_story_by_ref(project_id: int, ref: int) -> dict:
     return get_user_story(match["id"])
 
 
+def _fetch_story_context(prefix_ref: str) -> dict:
+    """
+    Internal: resolve PREFIX-N to project + story data.
+    Returns raw objects needed by get_story and pick_up_story, avoiding duplicated
+    HTTP calls when the two tools share the same lookup logic.
+    """
+    prefix_ref = prefix_ref.strip().upper()
+    if "-" not in prefix_ref:
+        raise ValueError(f"Expected PREFIX-N format (e.g. HOME-42), got: {prefix_ref}")
+    prefix, _, ref_str = prefix_ref.partition("-")
+    if not ref_str.isdigit():
+        raise ValueError(f"Ref must be numeric, got: {ref_str}")
+    ref = int(ref_str)
+
+    projects = _get("/projects")
+    project_stub = next(
+        (p for p in projects if _extract_prefix(p.get("tags_colors", {})) == prefix),
+        None,
+    )
+    if project_stub is None:
+        known = sorted({_extract_prefix(p.get("tags_colors", {})) for p in projects} - {None})
+        raise ValueError(f"No project with prefix '{prefix}'. Known prefixes: {known}")
+
+    project_id = project_stub["id"]
+    full_project = _get(f"/projects/{project_id}")
+    all_stories = _get_all("/userstories", project=project_id)
+
+    match = next((s for s in all_stories if s["ref"] == ref), None)
+    if match is None:
+        raise ValueError(f"No story with ref {ref} in project '{full_project['name']}'")
+
+    full_story = _get(f"/userstories/{match['id']}")
+    comments = _get_comments("userstory", match["id"])
+
+    return {
+        "prefix": prefix,
+        "prefix_ref": prefix_ref,
+        "full_project": full_project,
+        "match": match,        # list-endpoint object; carries version for versioned PATCH
+        "full_story": full_story,
+        "comments": comments,
+    }
+
+
+def _format_story_and_project(ctx: dict, status_source: dict = None) -> dict:
+    """Format the standard story+project response dict from a _fetch_story_context result."""
+    full_story = ctx["full_story"]
+    full_project = ctx["full_project"]
+    statuses = full_project.get("us_statuses", [])
+    src = status_source or full_story  # use updated object for status when available
+    return {
+        "story": {
+            "id": full_story["id"],
+            "ref": full_story["ref"],
+            "prefix_ref": ctx["prefix_ref"],
+            "subject": full_story["subject"],
+            "description": full_story.get("description", ""),
+            "status": _extra(src, "status"),
+            "status_id": src.get("status"),
+            "assigned_to": _extra(src, "assigned_to", "username"),
+            "tags": [t[0] for t in full_story.get("tags", [])],
+            "is_blocked": full_story.get("is_blocked", False),
+            "blocked_note": full_story.get("blocked_note", ""),
+            "comments": ctx["comments"],
+        },
+        "project": {
+            "id": full_project["id"],
+            "name": full_project["name"],
+            "slug": full_project["slug"],
+            "prefix": ctx["prefix"],
+            "us_statuses": [
+                {"id": s["id"], "name": s["name"], "is_closed": s.get("is_closed", False)}
+                for s in statuses
+            ],
+            "members": [
+                {"id": m["id"], "username": m.get("username", ""), "full_name": m.get("full_name", "")}
+                for m in full_project.get("members", [])
+            ],
+        },
+    }
+
+
+@mcp.tool()
+def get_story(prefix_ref: str) -> dict:
+    """
+    Fetch a story by Jira-style reference (e.g. HOME-42, TAIG-7). Read-only.
+    Returns full story details (description, comments, tags, blocked state)
+    plus project context (statuses, members) — everything needed to understand
+    and discuss a story without side effects.
+    Use pick_up_story instead when you are about to start working on the story.
+    """
+    ctx = _fetch_story_context(prefix_ref)
+    return _format_story_and_project(ctx)
+
+
+@mcp.tool()
+def pick_up_story(prefix_ref: str, assignee_id: int = None) -> dict:
+    """
+    Pick up a story: resolves PREFIX-N, moves it to In Progress (or first non-closed
+    status), optionally assigns it, and returns full story + project context.
+    Use get_story instead when you only need to read the story without side effects.
+    """
+    ctx = _fetch_story_context(prefix_ref)
+    full_project = ctx["full_project"]
+    match = ctx["match"]
+
+    statuses = full_project.get("us_statuses", [])
+    open_statuses = [s for s in statuses if not s.get("is_closed", False)]
+    in_progress = next(
+        (s for s in open_statuses if "progress" in s["name"].lower()),
+        open_statuses[0] if open_statuses else None,
+    )
+
+    update: dict = {}
+    if in_progress:
+        update["status"] = in_progress["id"]
+    if assignee_id is not None:
+        update["assigned_to"] = assignee_id
+    updated = _versioned_patch(f"/userstories/{match['id']}", update, known_version=match["version"])
+
+    return _format_story_and_project(ctx, status_source=updated)
+
+
 @mcp.tool()
 def get_user_story(story_id: int) -> dict:
-    """Get full details of a user story including description."""
+    """Get full details of a user story including description and comments."""
     s = _get(f"/userstories/{story_id}")
     return {
         "id": s["id"],
@@ -370,6 +550,7 @@ def get_user_story(story_id: int) -> dict:
         "is_closed": s.get("is_closed", False),
         "is_blocked": s.get("is_blocked", False),
         "blocked_note": s.get("blocked_note", ""),
+        "comments": _get_comments("userstory", story_id),
     }
 
 
