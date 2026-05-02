@@ -259,6 +259,7 @@ def get_project(project_id: int) -> dict:
         "name": p["name"],
         "slug": p["slug"],
         "description": p.get("description", ""),
+        "prefix": _extract_prefix(p.get("tags_colors", {})),
         "us_statuses": [{"id": s["id"], "name": s["name"], "is_closed": s["is_closed"]}
                         for s in p.get("us_statuses", [])],
         "task_statuses": [{"id": s["id"], "name": s["name"], "is_closed": s["is_closed"]}
@@ -608,6 +609,29 @@ def update_user_story(story_id: int, subject: str = None, description: str = Non
     result = _versioned_patch(f"/userstories/{story_id}", data)
     return {"id": result["id"], "ref": result["ref"], "subject": result["subject"],
             "status": _extra(result, "status")}
+
+
+@mcp.tool()
+def add_comment(comment: str, prefix_ref: str = None, item_type: str = None,
+                item_id: int = None) -> dict:
+    """Add a comment to a user story, issue, or task.
+    Either supply prefix_ref (e.g. 'HOME-42') for a user story,
+    or supply item_type ('userstory'|'issue'|'task') and item_id.
+    """
+    _TYPE_PATH = {"userstory": "userstories", "issue": "issues", "task": "tasks"}
+    if prefix_ref is not None:
+        ctx = _fetch_story_context(prefix_ref)
+        item_id = ctx["match"]["id"]
+        path = f"/userstories/{item_id}"
+    elif item_type is not None and item_id is not None:
+        path_segment = _TYPE_PATH.get(item_type)
+        if not path_segment:
+            raise ValueError(f"Unknown item_type '{item_type}'. Use one of: {list(_TYPE_PATH)}")
+        path = f"/{path_segment}/{item_id}"
+    else:
+        raise ValueError("Provide either prefix_ref or both item_type and item_id")
+    _versioned_patch(path, {"comment": comment})
+    return {"comment_added": True, "item_id": item_id}
 
 
 # ── Issues ────────────────────────────────────────────────────────────────────
