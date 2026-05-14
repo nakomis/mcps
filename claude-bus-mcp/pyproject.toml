@@ -1,0 +1,16 @@
+[project]
+name = "claude-bus-mcp"
+version = "0.1.0"
+description = "MCP server exposing the claude-bus (cross-Claude coordination over NATS JetStream)"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "nats-py>=2.7.0",
+]
+
+[project.scripts]
+claude-bus-mcp = "claude_bus_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
