@@ -8,10 +8,8 @@ Authentication uses a custom RSA+AES encryption scheme:
   3. Encrypt the password with RSA, sign the AES params with RSA
   4. All subsequent request payloads are AES-encrypted; responses are AES-decrypted
 
-Environment variables:
-  DECO_HOST      Router IP or hostname (default: 192.168.1.1)
-  DECO_USERNAME  Admin username (default: admin)
-  DECO_PASSWORD  Admin password (required)
+Credentials are read from the macOS Keychain (service "tplink-deco", accounts
+"host", "username", "password"). Store them with scripts/store-credentials.sh.
 """
 
 import base64
@@ -19,8 +17,8 @@ import hashlib
 import json
 import math
 import os
-import re
 import secrets
+import subprocess
 from urllib.parse import quote_plus
 
 import httpx
@@ -32,9 +30,24 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("tplink-deco-mcp")
 
-_HOST = os.environ.get("DECO_HOST", "192.168.1.1")
-_USERNAME = os.environ.get("DECO_USERNAME", "admin")
-_PASSWORD = os.environ.get("DECO_PASSWORD", "")
+_KEYCHAIN_SERVICE = "tplink-deco"
+
+
+def _keychain_get(account: str, default: str = "") -> str:
+    """Read a credential from the macOS Keychain."""
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", _KEYCHAIN_SERVICE, "-a", account, "-w"],
+            capture_output=True, text=True, check=True,
+        )
+        return result.stdout.strip()
+    except subprocess.CalledProcessError:
+        return default
+
+
+_HOST = _keychain_get("host", "192.168.1.1")
+_USERNAME = _keychain_get("username", "admin")
+_PASSWORD = _keychain_get("password")
 
 _AES_KEY_BYTES = 16
 _MIN_AES = 10 ** (_AES_KEY_BYTES - 1)
@@ -85,19 +98,22 @@ def _b64_decode_name(name: str) -> str:
 
 class _DecoClient:
     def __init__(self, host: str, username: str, password: str):
-        self._host = f"http://{host}" if not host.startswith("http") else host.rstrip("/")
+        self._host = f"https://{host}" if not host.startswith("http") else host.rstrip("/")
         self._username = username
         self._password = password
+        # Single client — the sysauth cookie set during login is required for all
+        # subsequent /admin/ calls; httpx persists it in the cookie jar automatically.
+        self._http = httpx.Client(verify=False, follow_redirects=True)
         self._reset()
 
     def _reset(self):
         self._stok = None
-        self._cookie = None
         self._seq = None
         self._aes_key = self._aes_iv = None
         self._aes_key_b = self._aes_iv_b = None
         self._pw_rsa_n = self._pw_rsa_e = None
         self._sign_rsa_n = self._sign_rsa_e = None
+        self._http.cookies.clear()
 
     def _gen_aes(self):
         self._aes_key = secrets.randbelow(_MAX_AES - _MIN_AES) + _MIN_AES
@@ -107,22 +123,24 @@ class _DecoClient:
 
     def _post(self, url: str, params: dict, body: str) -> dict:
         headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
             "Content-Type": "application/json",
             "X-Requested-With": "XMLHttpRequest",
+            "sec-ch-ua": '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"macOS"',
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Dest": "empty",
             "Referer": f"{self._host}/webpages/index.html",
+            "Origin": self._host,
         }
-        cookies = {}
-        if self._cookie:
-            k, _, v = self._cookie.partition("=")
-            cookies[k] = v
-        r = httpx.post(url, params=params, content=body.encode(),
-                       headers=headers, cookies=cookies, timeout=10, verify=False)
-        r.raise_for_status()
-        for name, value in r.headers.multi_items():
-            if name.lower() == "set-cookie":
-                m = re.search(r"sysauth=[a-f0-9]+", value)
-                if m:
-                    self._cookie = m.group(0)
+        r = self._http.post(url, params=params, content=body.encode(),
+                            headers=headers, timeout=10)
+        if not r.is_success:
+            raise RuntimeError(f"HTTP {r.status_code} for {url} — body: {r.text[:500]}")
         return r.json()
 
     def _fetch_keys(self):
@@ -144,14 +162,17 @@ class _DecoClient:
         raw = json.dumps(payload, separators=(",", ":")).encode()
         return base64.b64encode(_aes_encrypt(self._aes_key_b, self._aes_iv_b, raw)).decode()
 
-    def _encode_sign(self, data_len: int) -> str:
+    def _encode_sign(self, data_len: int, is_login: bool = False) -> str:
         h = hashlib.md5(f"{self._username}{self._password}".encode()).hexdigest()
-        text = f"k={self._aes_key}&i={self._aes_iv}&h={h}&s={self._seq + data_len}"
+        if is_login:
+            text = f"k={self._aes_key}&i={self._aes_iv}&h={h}&s={self._seq + data_len}"
+        else:
+            text = f"h={h}&s={self._seq + data_len}"
         return _rsa_encrypt(self._sign_rsa_n, self._sign_rsa_e, text.encode())
 
-    def _encode_payload(self, payload: dict) -> str:
+    def _encode_payload(self, payload: dict, is_login: bool = False) -> str:
         data = self._encode_data(payload)
-        return f"sign={self._encode_sign(len(data))}&data={quote_plus(data)}"
+        return f"sign={self._encode_sign(len(data), is_login)}&data={quote_plus(data)}"
 
     def _decrypt(self, data: str) -> dict:
         raw = _aes_decrypt(self._aes_key_b, self._aes_iv_b, base64.b64decode(data))
@@ -166,7 +187,10 @@ class _DecoClient:
         pw_enc = _rsa_encrypt(self._pw_rsa_n, self._pw_rsa_e, self._password.encode())
         payload = {"params": {"password": pw_enc}, "operation": "login"}
         url = f"{self._host}/cgi-bin/luci/;stok=/login"
-        resp = self._post(url, {"form": "login"}, self._encode_payload(payload))
+        body = self._encode_payload(payload, is_login=True)
+        # Use _post so the sysauth(_https) cookie is stored automatically in the httpx
+        # cookie jar with the correct name; do NOT override Cookie manually.
+        resp = self._post(url, {"form": "login"}, body)
         data = self._decrypt(resp["data"])
         if data.get("error_code") != 0:
             raise RuntimeError(f"Login failed (error_code={data.get('error_code')})")
@@ -181,8 +205,8 @@ class _DecoClient:
         url = f"{self._host}/cgi-bin/luci/;stok={self._stok}/admin/{endpoint}"
         try:
             resp = self._post(url, {"form": form}, self._encode_payload(payload))
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code in (401, 403):
+        except RuntimeError as e:
+            if "HTTP 401" in str(e) or "HTTP 403" in str(e):
                 self.login()
                 url = f"{self._host}/cgi-bin/luci/;stok={self._stok}/admin/{endpoint}"
                 resp = self._post(url, {"form": form}, self._encode_payload(payload))
