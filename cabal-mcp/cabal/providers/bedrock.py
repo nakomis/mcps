@@ -18,7 +18,9 @@ from .base import Reply
 
 # Map our canonical short IDs to Bedrock's model IDs.
 MODELS = {
-    "mistral-large": "mistral.mistral-large-2407-v1:0",
+    # eu-west-2 only has the Feb-2024 release; us-east-1 has -2407.
+    # Update this if you move regions and want the newer release.
+    "mistral-large": "mistral.mistral-large-2402-v1:0",
     "llama3-70b":    "meta.llama3-70b-instruct-v1:0",
     "nova-pro":      "amazon.nova-pro-v1:0",
 }
