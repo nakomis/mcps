@@ -27,6 +27,7 @@ async def ask_all(
     system: str | None = None,
     save_dir: str | None = None,
     save_slug: str | None = None,
+    bluntness: bool = True,
 ) -> dict:
     """Fan a prompt out across multiple LLM providers in parallel.
 
@@ -39,6 +40,9 @@ async def ask_all(
             this directory. Path is expanded (~ is honoured).
         save_slug: filename slug for saved files. Defaults to a slug derived
             from the prompt's first line.
+        bluntness: if True (default), prepend a "be blunt / falsify, don't
+            hedge / answer numbered questions in order" preamble to the system
+            prompt. Set False when you actually want the agreeable default.
 
     Returns:
         Dict with `results` (one per provider), `total_cost_usd`, and
@@ -50,6 +54,7 @@ async def ask_all(
         system=system,
         save_dir=save_dir,
         save_slug=save_slug,
+        bluntness=bluntness,
     )
 
 

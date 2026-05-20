@@ -24,6 +24,19 @@ DEFAULT_PROVIDERS = [
 
 ALL_PROVIDERS = DEFAULT_PROVIDERS  # alias; grows when more providers land
 
+# Prepended to the system prompt when bluntness=True. Licences disagreement
+# (LLMs default to agreeable) and asks for falsification over hedging — the
+# framing that made the multi-LLM Sinter consultation actually useful.
+BLUNTNESS_PREAMBLE = (
+    "Be blunt. If any part of the question or design is wrong, hand-wavy, "
+    "or based on a misunderstanding, say so directly. Prefer "
+    "\"this won't work because X\" over polite hedging. Don't pad with "
+    "caveats unless the caveat *is* the answer. If a question is malformed, "
+    "point that out instead of answering it as asked. If the questions are "
+    "numbered, answer them in order using the same numbering so the replies "
+    "can be diffed across models."
+)
+
 
 def _slug(s: str, n: int = 40) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
@@ -52,14 +65,21 @@ async def ask_all(
     system: str | None = None,
     save_dir: str | None = None,
     save_slug: str | None = None,
+    bluntness: bool = True,
 ) -> dict:
     """Fan out `prompt` across the given providers in parallel.
 
     Returns a dict suitable for JSON serialisation back to the MCP caller.
     If `save_dir` is set, also writes one Markdown file per provider plus a
     summary file, all in that directory.
+
+    If `bluntness` is True (the default), `BLUNTNESS_PREAMBLE` is prepended to
+    the system prompt — licences disagreement and asks for falsification over
+    hedging. Set False for tasks where the agreeable default is what you want.
     """
     specs = providers or DEFAULT_PROVIDERS
+    if bluntness:
+        system = BLUNTNESS_PREAMBLE + ("\n\n" + system if system else "")
     results: list[Reply] = [None] * len(specs)  # type: ignore[list-item]
 
     async with anyio.create_task_group() as tg:
