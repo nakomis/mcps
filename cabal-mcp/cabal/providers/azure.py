@@ -25,8 +25,11 @@ from .base import Reply
 # yours differently, edit this map or override via the `deployment`
 # argument.
 MODELS = {
-    "gpt-4o": "gpt-4o",
-    "grok":   "grok-4",
+    # Short ID → Foundry deployment name. Edit the right-hand side if your
+    # deployment names differ from these. `gpt-5.4-pro` deployment lands
+    # once the Azure OpenAI quota request is approved.
+    "gpt-5.4-pro": "gpt-5.4-pro",
+    "grok-4.3":    "grok-4.3",
 }
 
 

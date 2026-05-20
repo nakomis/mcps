@@ -31,9 +31,10 @@ PRICING: dict[str, Price] = {
     "bedrock:llama3-70b":         Price(input_per_1m=0.72,  output_per_1m=0.72),
     "bedrock:nova-pro":           Price(input_per_1m=0.80,  output_per_1m=3.20),
 
-    # Azure Foundry
-    "azure:gpt-4o":               Price(input_per_1m=2.50,  output_per_1m=10.00),
-    "azure:grok":                 Price(input_per_1m=5.00,  output_per_1m=15.00),
+    # Azure Foundry. Frontier-tier models — verify against Foundry's pricing
+    # page before quoting these in cost reports.
+    "azure:gpt-5.4-pro":          Price(input_per_1m=15.00, output_per_1m=60.00),
+    "azure:grok-4.3":             Price(input_per_1m=5.00,  output_per_1m=15.00),
 
     # Google AI Studio
     "gemini:gemini-2-pro":        Price(input_per_1m=1.25,  output_per_1m=5.00),

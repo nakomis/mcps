@@ -17,8 +17,8 @@ DEFAULT_PROVIDERS = [
     "bedrock:mistral-large",
     "bedrock:llama3-70b",
     "bedrock:nova-pro",
-    "azure:gpt-4o",
-    "azure:grok",
+    "azure:gpt-5.4-pro",
+    "azure:grok-4.3",
     "gemini:gemini-2-pro",
 ]
 
