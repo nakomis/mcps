@@ -36,8 +36,8 @@ PRICING: dict[str, Price] = {
     "azure:gpt-5.4-pro":          Price(input_per_1m=15.00, output_per_1m=60.00),
     "azure:grok-4.3":             Price(input_per_1m=5.00,  output_per_1m=15.00),
 
-    # Google AI Studio
-    "gemini:gemini-2-pro":        Price(input_per_1m=1.25,  output_per_1m=5.00),
+    # Google AI Studio. Gemini 3 preview pricing — re-verify before quoting.
+    "gemini:gemini-3-pro":        Price(input_per_1m=2.50,  output_per_1m=15.00),
     "gemini:gemini-2-flash":      Price(input_per_1m=0.075, output_per_1m=0.30),
 }
 

@@ -83,10 +83,10 @@ async def ask_azure(
 @mcp.tool()
 async def ask_gemini(
     prompt: str,
-    model: str = "gemini-2-pro",
+    model: str = "gemini-3-pro",
     system: str | None = None,
 ) -> dict:
-    """Ask a single Google AI Studio model (gemini-2-pro or gemini-2-flash)."""
+    """Ask a single Google AI Studio model (gemini-3-pro or gemini-2-flash)."""
     r = await gemini.ask(prompt, model=model, system=system)
     return r.__dict__
 

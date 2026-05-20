@@ -17,7 +17,7 @@ from .base import Reply
 MODELS = {
     # Short ID → AI Studio model name. Verify against
     # https://aistudio.google.com/ before quoting capabilities.
-    "gemini-2-pro":   "gemini-2.0-pro",
+    "gemini-3-pro":   "gemini-3-pro-preview",
     "gemini-2-flash": "gemini-2.0-flash",
 }
 

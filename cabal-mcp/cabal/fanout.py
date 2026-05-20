@@ -19,7 +19,7 @@ DEFAULT_PROVIDERS = [
     "bedrock:nova-pro",
     "azure:gpt-5.4-pro",
     "azure:grok-4.3",
-    "gemini:gemini-2-pro",
+    "gemini:gemini-3-pro",
 ]
 
 ALL_PROVIDERS = DEFAULT_PROVIDERS  # alias; grows when more providers land
