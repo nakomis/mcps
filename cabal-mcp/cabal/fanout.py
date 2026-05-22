@@ -9,6 +9,7 @@ from pathlib import Path
 
 import anyio
 
+from . import tracelog
 from .providers import azure, bedrock, gemini
 from .providers.base import Reply
 
@@ -44,18 +45,43 @@ def _slug(s: str, n: int = 40) -> str:
 
 
 async def _ask_one(spec: str, prompt: str, system: str | None) -> Reply:
+    log = tracelog.current()
     provider, _, model = spec.partition(":")
-    if provider == "bedrock":
-        return await bedrock.ask(prompt, model=model, system=system)
-    if provider == "azure":
-        return await azure.ask(prompt, model=model, system=system)
-    if provider == "gemini":
-        return await gemini.ask(prompt, model=model, system=system)
-    return Reply(
-        provider=spec, response="", input_tokens=0, output_tokens=0,
-        cost_usd=None, latency_ms=0,
-        error=f"unknown provider '{provider}' in spec '{spec}'",
-    )
+    log.log("provider.start", spec=spec, provider=provider, model=model)
+    try:
+        if provider == "bedrock":
+            r = await bedrock.ask(prompt, model=model, system=system)
+        elif provider == "azure":
+            r = await azure.ask(prompt, model=model, system=system)
+        elif provider == "gemini":
+            r = await gemini.ask(prompt, model=model, system=system)
+        else:
+            r = Reply(
+                provider=spec, response="", input_tokens=0, output_tokens=0,
+                cost_usd=None, latency_ms=0,
+                error=f"unknown provider '{provider}' in spec '{spec}'",
+            )
+    except BaseException as e:
+        # Providers normally catch their own exceptions and stuff them into
+        # Reply.error, but if one ever escapes we want the full traceback in
+        # the trace log rather than a silent task-group crash.
+        log.exception("provider.uncaught", e, spec=spec)
+        raise
+    if r.error:
+        log.log(
+            "provider.error",
+            spec=spec, error=r.error, latency_ms=r.latency_ms,
+        )
+    else:
+        log.log(
+            "provider.ok",
+            spec=spec,
+            input_tokens=r.input_tokens,
+            output_tokens=r.output_tokens,
+            cost_usd=r.cost_usd,
+            latency_ms=r.latency_ms,
+        )
+    return r
 
 
 async def ask_all(
@@ -80,19 +106,45 @@ async def ask_all(
     specs = providers or DEFAULT_PROVIDERS
     if bluntness:
         system = BLUNTNESS_PREAMBLE + ("\n\n" + system if system else "")
+    log = tracelog.start(
+        "ask_all",
+        providers=specs,
+        prompt_chars=len(prompt) if prompt else 0,
+        prompt_preview=(prompt or "")[:500],
+        has_system=system is not None,
+        system_chars=len(system) if system else 0,
+        bluntness=bluntness,
+        save_dir=save_dir,
+    )
     results: list[Reply] = [None] * len(specs)  # type: ignore[list-item]
 
-    async with anyio.create_task_group() as tg:
-        async def runner(i: int, spec: str) -> None:
-            results[i] = await _ask_one(spec, prompt, system)
-        for i, spec in enumerate(specs):
-            tg.start_soon(runner, i, spec)
+    try:
+        async with anyio.create_task_group() as tg:
+            async def runner(i: int, spec: str) -> None:
+                results[i] = await _ask_one(spec, prompt, system)
+            for i, spec in enumerate(specs):
+                tg.start_soon(runner, i, spec)
+    except BaseException as e:
+        log.exception("fanout.task_group_crashed", e)
+        raise
 
     saved: list[str] = []
     if save_dir:
-        saved = _persist(save_dir, save_slug, prompt, system, results)
+        try:
+            saved = _persist(save_dir, save_slug, prompt, system, results)
+            log.log("persist.ok", files=len(saved), save_dir=save_dir)
+        except Exception as e:
+            log.exception("persist.failed", e, save_dir=save_dir)
+            raise
 
     total_cost = sum((r.cost_usd or 0.0) for r in results)
+    error_count = sum(1 for r in results if r.error)
+    log.log(
+        "call.end",
+        providers=len(specs),
+        errors=error_count,
+        total_cost_usd=round(total_cost, 6),
+    )
 
     return {
         "providers": specs,

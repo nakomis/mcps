@@ -16,7 +16,7 @@ import time
 
 import anyio
 
-from .. import secrets
+from .. import secrets, tracelog
 from ..pricing import cost
 from .base import Reply
 
@@ -90,6 +90,7 @@ async def ask(
             _invoke_sync, model, prompt, system, deployment,
         )
     except Exception as e:
+        tracelog.current().exception("azure.ask.failed", e, model=model)
         return Reply(
             provider=full_id, response="", input_tokens=0, output_tokens=0,
             cost_usd=None, latency_ms=int((time.monotonic() - t0) * 1000),

@@ -47,6 +47,17 @@ async def ask_all(
     Returns:
         Dict with `results` (one per provider), `total_cost_usd`, and
         `saved_files` (paths written, if save_dir was set).
+
+    Failure modes the calling model should surface to the user verbatim:
+      - If any Bedrock provider returns an error containing
+        "UnauthorizedSSOTokenError" or "SSO session ... expired", the AWS
+        SSO session has expired. Tell the user to run `aws sso login` (or
+        the appropriate `--profile` variant) and then retry the call. Do
+        not silently drop Bedrock providers — surface the SSO failure.
+      - A trace log for every call is written to /Volumes/lru/cabal-mcp/
+        (one file per call) with full tracebacks for any provider failure;
+        point the user at the latest file there if they ask why something
+        broke.
     """
     return await _ask_all(
         prompt,
@@ -64,7 +75,13 @@ async def ask_bedrock(
     model: str = "mistral-large",
     system: str | None = None,
 ) -> dict:
-    """Ask a single Bedrock-hosted model. See list_providers() for model names."""
+    """Ask a single Bedrock-hosted model. See list_providers() for model names.
+
+    Uses the AWS SDK credential chain. If the call returns an error mentioning
+    `UnauthorizedSSOTokenError` or an expired SSO session, the user's AWS SSO
+    session has expired — tell the user to run `aws sso login` and then retry.
+    Full tracebacks for any failure are written to /Volumes/lru/cabal-mcp/.
+    """
     r = await bedrock.ask(prompt, model=model, system=system)
     return r.__dict__
 
