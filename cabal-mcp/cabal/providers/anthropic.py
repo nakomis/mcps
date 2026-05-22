@@ -35,10 +35,11 @@ def _invoke_sync(model: str, prompt: str, system: str | None):
     api_key = secrets.get("anthropic-api-key").value
     client = anthropic.Anthropic(api_key=api_key)
 
+    # Note: `temperature` is deliberately omitted — recent Opus models reject
+    # it as deprecated. The API default is used.
     kwargs: dict = {
         "model": MODELS[model],
         "max_tokens": 4096,
-        "temperature": 0.7,
         "messages": [{"role": "user", "content": prompt}],
     }
     if system:
