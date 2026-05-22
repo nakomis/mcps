@@ -16,11 +16,16 @@ in the Sinter repo.
 | AWS Bedrock | `mistral-large`, `llama3-70b`, `nova-pro` | Standard AWS SDK credential chain (env vars / `~/.aws/credentials` / IAM role). Set `AWS_PROFILE` and `AWS_REGION` as usual. |
 | Azure AI Foundry | `gpt-4o`, `grok` | Keychain: `azure-foundry-endpoint`, `azure-foundry-key`. Per-model override: `azure-foundry-<model>-endpoint` / `-key`. |
 | Google AI Studio | `gemini-2-pro`, `gemini-2-flash` | Keychain: `gemini-api-key` (free-tier key from <https://aistudio.google.com/apikey>). |
+| Anthropic | `opus-4.7` | Keychain: `anthropic-api-key` (from <https://console.anthropic.com/settings/keys>). Direct Anthropic API. |
 
-**Claude is deliberately excluded** — you're already paying for it via
-Claude Max, and adding Bedrock-Anthropic would mean paying twice. The
-intent is for Claude (calling this MCP) to act as the orchestrator and
-synthesiser of the cabal's responses.
+**Claude is included as a deliberate, opt-in voice** — originally it was
+left out, on the grounds that the orchestrating agent is itself Claude and
+adding it again would mean paying twice. That still holds for the
+*orchestrator* role. But an independent Claude *review* is a different job
+from Claude *orchestrating*, and Opus is genuinely best-in-field for
+editorial and technical critique — so it now sits in the cabal as a peer
+provider. It uses the direct Anthropic API (Bedrock model access having
+been declined, and the direct API has no approval gate).
 
 **Copilot is not a provider** — Microsoft Copilot has no public API. It's
 GPT-4o plus Microsoft's prompting layer; the closest programmatic
@@ -34,7 +39,8 @@ mimics Copilot's framing.
 | `ask_all(prompt, providers=, system=, save_dir=, save_slug=)` | Fan out to multiple providers in parallel, return all responses + costs. |
 | `ask_bedrock(prompt, model="mistral-large", system=)` | Single Bedrock call. |
 | `ask_azure(prompt, model="gpt-4o", system=)` | Single Azure Foundry call. |
-| `ask_gemini(prompt, model="gemini-2-pro", system=)` | Single Gemini call. |
+| `ask_gemini(prompt, model="gemini-3-pro", system=)` | Single Gemini call. |
+| `ask_anthropic(prompt, model="opus-4.7", system=)` | Single Anthropic Claude call. |
 | `list_providers()` | List configured provider:model specs. |
 | `check_secrets()` | Report which secrets are configured (without revealing values). |
 
@@ -53,6 +59,7 @@ from cabal import secrets
 secrets.store("gemini-api-key", "AIza...")
 secrets.store("azure-foundry-endpoint", "https://my-resource.services.ai.azure.com/models")
 secrets.store("azure-foundry-key", "<...>")
+secrets.store("anthropic-api-key", "sk-ant-...")
 ```
 
 `secrets.store` writes to keychain **and** mirrors to SSM (so the same
@@ -95,6 +102,7 @@ Quick refresh sources:
 - Bedrock: <https://aws.amazon.com/bedrock/pricing/>
 - Azure Foundry: <https://azure.microsoft.com/pricing/details/ai-studio/>
 - Google AI Studio: <https://ai.google.dev/pricing>
+- Anthropic: <https://www.anthropic.com/pricing>
 
 ## Cost discipline
 

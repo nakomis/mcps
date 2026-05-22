@@ -1,7 +1,7 @@
 [project]
 name = "cabal-mcp"
 version = "0.1.0"
-description = "Convene a cabal of LLMs — fan a single prompt out to Bedrock, Azure Foundry, and Google AI Studio, compile the results"
+description = "Convene a cabal of LLMs — fan a single prompt out to Bedrock, Azure Foundry, Google AI Studio, and Anthropic, compile the results"
 requires-python = ">=3.11"
 dependencies = [
     "mcp[cli]>=1.0.0",
@@ -9,6 +9,7 @@ dependencies = [
     "azure-ai-inference>=1.0.0b9",
     "azure-core>=1.30.0",
     "google-genai>=0.3.0",
+    "anthropic>=0.40.0",
     "anyio>=4.3.0",
 ]
 

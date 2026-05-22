@@ -39,6 +39,9 @@ PRICING: dict[str, Price] = {
     # Google AI Studio. Gemini 3 preview pricing — re-verify before quoting.
     "gemini:gemini-3-pro":        Price(input_per_1m=2.50,  output_per_1m=15.00),
     "gemini:gemini-2-flash":      Price(input_per_1m=0.075, output_per_1m=0.30),
+
+    # Anthropic (direct API). Opus-tier pricing — re-verify before quoting.
+    "anthropic:opus-4.7":         Price(input_per_1m=15.00, output_per_1m=75.00),
 }
 
 

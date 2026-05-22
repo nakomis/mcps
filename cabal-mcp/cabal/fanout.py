@@ -10,10 +10,10 @@ from pathlib import Path
 import anyio
 
 from . import tracelog
-from .providers import azure, bedrock, gemini
+from .providers import anthropic, azure, bedrock, gemini
 from .providers.base import Reply
 
-# The default cabal: one voice per provider, cheapest sensible model each.
+# The default cabal: one voice per provider.
 DEFAULT_PROVIDERS = [
     "bedrock:mistral-large",
     "bedrock:llama3-70b",
@@ -21,6 +21,7 @@ DEFAULT_PROVIDERS = [
     "azure:gpt-5.4-pro",
     "azure:grok-4.3",
     "gemini:gemini-3-pro",
+    "anthropic:opus-4.7",
 ]
 
 ALL_PROVIDERS = DEFAULT_PROVIDERS  # alias; grows when more providers land
@@ -55,6 +56,8 @@ async def _ask_one(spec: str, prompt: str, system: str | None) -> Reply:
             r = await azure.ask(prompt, model=model, system=system)
         elif provider == "gemini":
             r = await gemini.ask(prompt, model=model, system=system)
+        elif provider == "anthropic":
+            r = await anthropic.ask(prompt, model=model, system=system)
         else:
             r = Reply(
                 provider=spec, response="", input_tokens=0, output_tokens=0,

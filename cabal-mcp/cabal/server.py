@@ -4,7 +4,8 @@ Exposes:
   - ask_all(prompt, providers=None, system=None, save_dir=None, save_slug=None)
   - ask_bedrock(prompt, model="mistral-large", system=None)
   - ask_azure(prompt, model="gpt-4o", system=None)
-  - ask_gemini(prompt, model="gemini-2-pro", system=None)
+  - ask_gemini(prompt, model="gemini-3-pro", system=None)
+  - ask_anthropic(prompt, model="opus-4.7", system=None)
   - list_providers()
   - check_secrets()
 """
@@ -15,7 +16,7 @@ from mcp.server.fastmcp import FastMCP
 
 from . import secrets
 from .fanout import ALL_PROVIDERS, DEFAULT_PROVIDERS, ask_all as _ask_all
-from .providers import azure, bedrock, gemini
+from .providers import anthropic, azure, bedrock, gemini
 
 mcp = FastMCP("cabal")
 
@@ -109,15 +110,32 @@ async def ask_gemini(
 
 
 @mcp.tool()
+async def ask_anthropic(
+    prompt: str,
+    model: str = "opus-4.7",
+    system: str | None = None,
+) -> dict:
+    """Ask a single Anthropic Claude model directly (e.g. opus-4.7).
+
+    Uses the `anthropic-api-key` secret. Note that the orchestrating agent is
+    itself Claude — an independent Claude review is a deliberate, opt-in voice
+    in the cabal, not the same thing as Claude orchestrating.
+    """
+    r = await anthropic.ask(prompt, model=model, system=system)
+    return r.__dict__
+
+
+@mcp.tool()
 def list_providers() -> dict:
     """List all providers the MCP can talk to, with their canonical IDs."""
     return {
         "default_cabal": DEFAULT_PROVIDERS,
         "all": ALL_PROVIDERS,
         "by_provider": {
-            "bedrock": [f"bedrock:{m}" for m in bedrock.MODELS],
-            "azure":   [f"azure:{m}"   for m in azure.MODELS],
-            "gemini":  [f"gemini:{m}"  for m in gemini.MODELS],
+            "bedrock":   [f"bedrock:{m}"   for m in bedrock.MODELS],
+            "azure":     [f"azure:{m}"     for m in azure.MODELS],
+            "gemini":    [f"gemini:{m}"    for m in gemini.MODELS],
+            "anthropic": [f"anthropic:{m}" for m in anthropic.MODELS],
         },
     }
 
@@ -133,6 +151,7 @@ def check_secrets() -> dict:
         "azure-foundry-endpoint",
         "azure-foundry-key",
         "gemini-api-key",
+        "anthropic-api-key",
     ]
     found = {}
     for name in needed:
