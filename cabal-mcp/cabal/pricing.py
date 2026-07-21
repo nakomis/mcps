@@ -30,18 +30,24 @@ PRICING: dict[str, Price] = {
     "bedrock:mistral-large":      Price(input_per_1m=2.00,  output_per_1m=6.00),
     "bedrock:llama3-70b":         Price(input_per_1m=0.72,  output_per_1m=0.72),
     "bedrock:nova-pro":           Price(input_per_1m=0.80,  output_per_1m=3.20),
+    # Fable 5 on Bedrock (global profile) — matches the direct API, verified
+    # against the accepted Marketplace rate card 2026-07-02.
+    "bedrock:fable-5":            Price(input_per_1m=10.00, output_per_1m=50.00),
 
     # Azure Foundry. Frontier-tier models — verify against Foundry's pricing
     # page before quoting these in cost reports.
     "azure:gpt-5.4-pro":          Price(input_per_1m=15.00, output_per_1m=60.00),
     "azure:grok-4.3":             Price(input_per_1m=5.00,  output_per_1m=15.00),
 
-    # Google AI Studio. Gemini 3 preview pricing — re-verify before quoting.
-    "gemini:gemini-3-pro":        Price(input_per_1m=2.50,  output_per_1m=15.00),
-    "gemini:gemini-2-flash":      Price(input_per_1m=0.075, output_per_1m=0.30),
+    # Google AI Studio. ≤200k-token prompts; the >200k tier is dearer.
+    # Verified 2026-07-02.
+    "gemini:gemini-3.1-pro":      Price(input_per_1m=2.00,  output_per_1m=12.00),
+    "gemini:gemini-3.5-flash":    Price(input_per_1m=1.50,  output_per_1m=9.00),
 
-    # Anthropic (direct API). Opus-tier pricing — re-verify before quoting.
-    "anthropic:opus-4.7":         Price(input_per_1m=15.00, output_per_1m=75.00),
+    # Anthropic (direct API). Verified 2026-07-02.
+    "anthropic:opus-4.7":         Price(input_per_1m=5.00,  output_per_1m=25.00),
+    "anthropic:opus-4-8":         Price(input_per_1m=5.00,  output_per_1m=25.00),
+    "anthropic:fable-5":          Price(input_per_1m=10.00, output_per_1m=50.00),
 }
 
 

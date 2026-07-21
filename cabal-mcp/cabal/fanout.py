@@ -13,18 +13,28 @@ from . import tracelog
 from .providers import anthropic, azure, bedrock, gemini
 from .providers.base import Reply
 
-# The default cabal: one voice per provider.
+# The default cabal: the working frontier set (audited 2026-07-02).
 DEFAULT_PROVIDERS = [
     "bedrock:mistral-large",
     "bedrock:llama3-70b",
     "bedrock:nova-pro",
-    "azure:gpt-5.4-pro",
     "azure:grok-4.3",
-    "gemini:gemini-3-pro",
-    "anthropic:opus-4.7",
+    "gemini:gemini-3.1-pro",
+    "anthropic:opus-4-8",
+    "anthropic:fable-5",
 ]
 
-ALL_PROVIDERS = DEFAULT_PROVIDERS  # alias; grows when more providers land
+# Defined but not in the default fan-out: azure:gpt-5.4-pro (deployment
+# missing in Foundry), bedrock:fable-5 (account not entitled — InvokeModel
+# returns AccessDenied/"contact AWS Sales" despite the accepted agreement;
+# retry if AWS unlock lands), gemini:gemini-3.5-flash (fast/cheap seat),
+# anthropic:opus-4.7 (superseded).
+ALL_PROVIDERS = DEFAULT_PROVIDERS + [
+    "azure:gpt-5.4-pro",
+    "bedrock:fable-5",
+    "gemini:gemini-3.5-flash",
+    "anthropic:opus-4.7",
+]
 
 # Prepended to the system prompt when bluntness=True. Licences disagreement
 # (LLMs default to agreeable) and asks for falsification over hedging — the
