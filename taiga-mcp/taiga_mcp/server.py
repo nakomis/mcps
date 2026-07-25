@@ -120,9 +120,9 @@ def _get_page(path: str, page: int, page_size: int, **params) -> tuple[list, dic
         },
         "timeout": 10,
     }
-    r = httpx.get(f"{_base()}{path}", headers=_headers(), **kw)
+    r = _client.get(f"{_base()}{path}", headers=_headers(), **kw)
     if r.status_code == 401:
-        r = httpx.get(f"{_base()}{path}", headers=_refresh_and_headers(), **kw)
+        r = _client.get(f"{_base()}{path}", headers=_refresh_and_headers(), **kw)
     r.raise_for_status()
     items = r.json() or []
     total = r.headers.get("x-pagination-count")
