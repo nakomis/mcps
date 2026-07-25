@@ -29,36 +29,48 @@ class SubMcp:
     env: dict[str, str] = field(default_factory=dict)
     process: asyncio.subprocess.Process | None = None
     initialised: bool = False
+    # Guards spawn/initialise so only one coroutine starts the subprocess.
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Serialises stdio request/response round-trips. A sub-MCP is one process
+    # behind ONE stdin/stdout pipe, and asyncio.StreamReader allows only a
+    # single concurrent reader — two coroutines awaiting stdout.readline() at
+    # once raises "readuntil() called while another coroutine is already
+    # waiting for incoming data", and even when it doesn't, one coroutine can
+    # consume the other's response line (matched by id, then `continue`d away),
+    # hanging the loser forever. So every _send/_notify holds this lock: at most
+    # one in-flight request per sub-MCP, callers queue instead of colliding.
+    _io_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     async def _send(self, method: str, params: dict | None = None) -> Any:
         msg = {"jsonrpc": "2.0", "id": _id(), "method": method}
         if params:
             msg["params"] = params
         line = json.dumps(msg) + "\n"
-        self.process.stdin.write(line.encode())
-        await self.process.stdin.drain()
+        async with self._io_lock:
+            self.process.stdin.write(line.encode())
+            await self.process.stdin.drain()
 
-        while True:
-            raw = await self.process.stdout.readline()
-            if not raw:
-                raise RuntimeError(f"sub-MCP '{self.name}' closed stdout unexpectedly")
-            try:
-                response = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if response.get("id") == msg["id"]:
-                if "error" in response:
-                    raise RuntimeError(f"sub-MCP error: {response['error']}")
-                return response.get("result")
+            while True:
+                raw = await self.process.stdout.readline()
+                if not raw:
+                    raise RuntimeError(f"sub-MCP '{self.name}' closed stdout unexpectedly")
+                try:
+                    response = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if response.get("id") == msg["id"]:
+                    if "error" in response:
+                        raise RuntimeError(f"sub-MCP error: {response['error']}")
+                    return response.get("result")
 
     async def _notify(self, method: str, params: dict | None = None) -> None:
         msg = {"jsonrpc": "2.0", "method": method}
         if params:
             msg["params"] = params
         line = json.dumps(msg) + "\n"
-        self.process.stdin.write(line.encode())
-        await self.process.stdin.drain()
+        async with self._io_lock:
+            self.process.stdin.write(line.encode())
+            await self.process.stdin.drain()
 
     async def ensure_started(self) -> None:
         async with self._lock:
