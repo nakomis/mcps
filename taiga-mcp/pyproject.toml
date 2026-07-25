@@ -11,6 +11,11 @@ dependencies = [
 [project.scripts]
 taiga-mcp = "taiga_mcp.server:main"
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
