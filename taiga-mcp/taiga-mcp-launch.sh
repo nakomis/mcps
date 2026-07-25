@@ -5,7 +5,7 @@
 #   security add-generic-password -s taiga -a password -w <admin-password>
 set -euo pipefail
 
-export TAIGA_URL="${TAIGA_URL:-http://luke.local:9000}"
+export TAIGA_URL="${TAIGA_URL:-https://taiga.home.nakomis.com}"
 export TAIGA_USERNAME=$(security find-generic-password -s taiga -a username -w)
 export TAIGA_PASSWORD=$(security find-generic-password -s taiga -a password -w)
 

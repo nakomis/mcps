@@ -15,6 +15,23 @@ def _base() -> str:
     return url.rstrip("/") + "/api/v1"
 
 
+# Optional client certificate for mTLS-gated deployments (e.g. behind nginx that
+# requires a client cert). Set TAIGA_CLIENT_CERT (+ TAIGA_CLIENT_KEY for a
+# separate PEM key) to enable. Falls back to the plain httpx module otherwise,
+# so this is a drop-in: _client.get/post/patch/delete match httpx.* exactly.
+def _make_client():
+    cert_file = os.environ.get("TAIGA_CLIENT_CERT")
+    key_file = os.environ.get("TAIGA_CLIENT_KEY")
+    if cert_file and key_file:
+        return httpx.Client(cert=(cert_file, key_file))
+    if cert_file:
+        return httpx.Client(cert=cert_file)
+    return httpx
+
+
+_client = _make_client()
+
+
 # Module-level token cache — refreshed automatically on 401.
 _token: str = ""
 
@@ -27,7 +44,7 @@ def _authenticate() -> str:
     password = os.environ.get("TAIGA_PASSWORD", "")
     if not (username and password):
         raise RuntimeError("TAIGA_USERNAME and TAIGA_PASSWORD environment variables must be set")
-    r = httpx.post(
+    r = _client.post(
         f"{_base()}/auth",
         json={"type": "normal", "username": username, "password": password},
         timeout=10,
@@ -52,9 +69,9 @@ def _refresh_and_headers() -> dict:
 
 def _get(path: str, **params) -> dict | list:
     kw = {"params": {k: v for k, v in params.items() if v is not None}, "timeout": 10}
-    r = httpx.get(f"{_base()}{path}", headers=_headers(), **kw)
+    r = _client.get(f"{_base()}{path}", headers=_headers(), **kw)
     if r.status_code == 401:
-        r = httpx.get(f"{_base()}{path}", headers=_refresh_and_headers(), **kw)
+        r = _client.get(f"{_base()}{path}", headers=_refresh_and_headers(), **kw)
     r.raise_for_status()
     return r.json()
 
@@ -68,9 +85,9 @@ def _get_all(path: str, **params) -> list:
             "params": {k: v for k, v in {**params, "page": page}.items() if v is not None},
             "timeout": 10,
         }
-        r = httpx.get(f"{_base()}{path}", headers=_headers(), **kw)
+        r = _client.get(f"{_base()}{path}", headers=_headers(), **kw)
         if r.status_code == 401:
-            r = httpx.get(f"{_base()}{path}", headers=_refresh_and_headers(), **kw)
+            r = _client.get(f"{_base()}{path}", headers=_refresh_and_headers(), **kw)
         r.raise_for_status()
         page_data = r.json()
         if not page_data:
@@ -84,17 +101,17 @@ def _get_all(path: str, **params) -> list:
 
 
 def _post(path: str, data: dict) -> dict:
-    r = httpx.post(f"{_base()}{path}", headers=_headers(), json=data, timeout=10)
+    r = _client.post(f"{_base()}{path}", headers=_headers(), json=data, timeout=10)
     if r.status_code == 401:
-        r = httpx.post(f"{_base()}{path}", headers=_refresh_and_headers(), json=data, timeout=10)
+        r = _client.post(f"{_base()}{path}", headers=_refresh_and_headers(), json=data, timeout=10)
     r.raise_for_status()
     return r.json()
 
 
 def _patch(path: str, data: dict) -> dict:
-    r = httpx.patch(f"{_base()}{path}", headers=_headers(), json=data, timeout=10)
+    r = _client.patch(f"{_base()}{path}", headers=_headers(), json=data, timeout=10)
     if r.status_code == 401:
-        r = httpx.patch(f"{_base()}{path}", headers=_refresh_and_headers(), json=data, timeout=10)
+        r = _client.patch(f"{_base()}{path}", headers=_refresh_and_headers(), json=data, timeout=10)
     r.raise_for_status()
     return r.json()
 
@@ -109,9 +126,9 @@ def _versioned_patch(path: str, data: dict, known_version: int = None) -> dict:
 
 
 def _delete(path: str) -> None:
-    r = httpx.delete(f"{_base()}{path}", headers=_headers(), timeout=10)
+    r = _client.delete(f"{_base()}{path}", headers=_headers(), timeout=10)
     if r.status_code == 401:
-        r = httpx.delete(f"{_base()}{path}", headers=_refresh_and_headers(), timeout=10)
+        r = _client.delete(f"{_base()}{path}", headers=_refresh_and_headers(), timeout=10)
     r.raise_for_status()
 
 
