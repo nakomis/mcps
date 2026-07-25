@@ -26,8 +26,10 @@ from .base import Reply
 # argument.
 MODELS = {
     # Short ID → Foundry deployment name. Edit the right-hand side if your
-    # deployment names differ from these. `gpt-5.4-pro` deployment lands
-    # once the Azure OpenAI quota request is approved.
+    # deployment names differ from these. `gpt-5.4-pro` still returns
+    # DeploymentNotFound as of 2026-07-02 — the Azure OpenAI quota request /
+    # deployment has not landed; it is excluded from the default cabal until
+    # the deployment exists in the Foundry portal.
     "gpt-5.4-pro": "gpt-5.4-pro",
     "grok-4.3":    "grok-4.3",
 }

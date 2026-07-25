@@ -5,8 +5,9 @@ is itself Claude. Claude is included here as an explicit, opt-in choice: an
 independent Claude *review* is a different role from Claude *orchestrating*,
 and Opus is genuinely best-in-field for editorial and technical critique.
 
-Direct Anthropic API rather than Bedrock — Bedrock model access was declined,
-and the direct API has no approval gate.
+Direct Anthropic API. (Bedrock Anthropic access was granted 2026-07-02 —
+`bedrock:fable-5` is the Bedrock-side Claude seat; this provider keeps the
+direct-API seat for the Opus tier.)
 
 Secrets:
   - `anthropic-api-key`  from https://console.anthropic.com/settings/keys
@@ -26,6 +27,8 @@ MODELS = {
     # Short ID → Anthropic API model name. Verify against
     # https://docs.anthropic.com/en/docs/about-claude/models before quoting.
     "opus-4.7": "claude-opus-4-7",
+    "opus-4-8": "claude-opus-4-8",
+    "fable-5":  "claude-fable-5",
 }
 
 
@@ -46,6 +49,13 @@ def _invoke_sync(model: str, prompt: str, system: str | None):
         kwargs["system"] = system
 
     msg = client.messages.create(**kwargs)
+    if getattr(msg, "stop_reason", None) == "refusal":
+        # Fable-family safety classifiers can decline with HTTP 200 and an
+        # empty content array. Surface it rather than returning "".
+        raise RuntimeError(
+            f"{MODELS[model]} declined the request (stop_reason=refusal); "
+            "rephrase or use another model"
+        )
     text = "".join(
         block.text for block in msg.content
         if getattr(block, "type", None) == "text"

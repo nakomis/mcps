@@ -15,10 +15,11 @@ from ..pricing import cost
 from .base import Reply
 
 MODELS = {
-    # Short ID → AI Studio model name. Verify against
-    # https://aistudio.google.com/ before quoting capabilities.
-    "gemini-3-pro":   "gemini-3-pro-preview",
-    "gemini-2-flash": "gemini-2.0-flash",
+    # Short ID → AI Studio model name. Verify against the live ListModels
+    # endpoint before changing (gemini-3-pro-preview and gemini-2.0-flash
+    # were retired; replaced 2026-07-02).
+    "gemini-3.1-pro":   "gemini-3.1-pro-preview",
+    "gemini-3.5-flash": "gemini-3.5-flash",
 }
 
 

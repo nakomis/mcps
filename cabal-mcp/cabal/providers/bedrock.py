@@ -24,6 +24,13 @@ MODELS = {
     "mistral-large": "mistral.mistral-large-2402-v1:0",
     "llama3-70b":    "meta.llama3-70b-instruct-v1:0",
     "nova-pro":      "amazon.nova-pro-v1:0",
+    # Claude Fable 5 — model agreement accepted 2026-07-02, but InvokeModel
+    # still returns AccessDenied ("not available for this account ... contact
+    # AWS Sales") in eu-west-2 and us-east-1: account-level gating beyond the
+    # normal access grant. Kept here for when AWS unlocks it; use
+    # anthropic:fable-5 (direct API) meanwhile. No eu.* inference profile
+    # exists yet, so this uses the global profile.
+    "fable-5":       "global.anthropic.claude-fable-5",
 }
 
 
@@ -55,6 +62,17 @@ def _build_request(model_short: str, prompt: str, system: str | None) -> dict:
         if system:
             body["system"] = [{"text": system}]
         return body
+    if model_short == "fable-5":
+        # Anthropic messages body. Fable 5 has thinking always on — sending a
+        # `thinking` param or `temperature` gets a 400, so send neither.
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 4096,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if system:
+            body["system"] = system
+        return body
     raise ValueError(f"unknown Bedrock model: {model_short}")
 
 
@@ -71,6 +89,21 @@ def _parse_response(model_short: str, body: dict) -> tuple[str, int, int]:
         text = body["output"]["message"]["content"][0]["text"]
         usage = body.get("usage", {})
         return text, usage.get("inputTokens", 0), usage.get("outputTokens", 0)
+    if model_short == "fable-5":
+        if body.get("stop_reason") == "refusal":
+            # Safety-classifier decline. Bedrock has no server-side fallback
+            # for this; surface it as an error so the caller can rephrase or
+            # route to another seat.
+            raise RuntimeError(
+                "Fable 5 declined the request (stop_reason=refusal); "
+                "rephrase or use another model"
+            )
+        text = "".join(
+            block.get("text", "") for block in body.get("content", [])
+            if block.get("type") == "text"
+        )
+        usage = body.get("usage", {})
+        return text, usage.get("input_tokens", 0), usage.get("output_tokens", 0)
     raise ValueError(f"unknown Bedrock model: {model_short}")
 
 
