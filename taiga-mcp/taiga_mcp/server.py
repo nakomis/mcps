@@ -60,7 +60,10 @@ def _get(path: str, **params) -> dict | list:
 
 
 def _get_all(path: str, **params) -> list:
-    """GET a list endpoint, following Taiga's page-based pagination automatically."""
+    """GET a list endpoint, following Taiga's page-based pagination automatically.
+    Use sparingly — this pulls every matching item into memory. list_* MCP tools
+    should go through _list_with_guard instead; _get_all is for internal helpers
+    (ref lookups) that genuinely need the whole set."""
     results = []
     page = 1
     while True:
@@ -81,6 +84,135 @@ def _get_all(path: str, **params) -> list:
             break
         page += 1
     return results
+
+
+def _get_page(path: str, page: int, page_size: int, **params) -> tuple[list, dict]:
+    """GET a single page from a Taiga list endpoint using its native pagination.
+
+    Returns (items, info) where info carries:
+      - total_count: int | None  — from the x-pagination-count header, if the
+        endpoint is paginated (None if Taiga didn't send pagination headers)
+      - is_paginated: bool       — from the x-paginated header
+      - current_page: int        — from x-pagination-current, falling back to
+        the requested page
+    """
+    kw = {
+        "params": {
+            k: v for k, v in {**params, "page": page, "page_size": page_size}.items()
+            if v is not None
+        },
+        "timeout": 10,
+    }
+    r = httpx.get(f"{_base()}{path}", headers=_headers(), **kw)
+    if r.status_code == 401:
+        r = httpx.get(f"{_base()}{path}", headers=_refresh_and_headers(), **kw)
+    r.raise_for_status()
+    items = r.json() or []
+    total = r.headers.get("x-pagination-count")
+    info = {
+        "total_count": int(total) if total is not None else None,
+        "is_paginated": r.headers.get("x-paginated") == "true",
+        "current_page": int(r.headers.get("x-pagination-current", page)),
+    }
+    return items, info
+
+
+# ── list_* token-budget guard ────────────────────────────────────────────────
+#
+# Large Taiga projects can hold thousands of stories/issues/tasks. Returning
+# every one of them in full detail can overflow the MCP/LLM response limit,
+# making the tool entirely unusable (this happened for real on Home
+# Infrastructure). _list_with_guard is the shared engine behind list_user_stories,
+# list_issues, list_tasks, and list_epics:
+#
+#   - page=None (default): behaves like the old "give me everything" call, but
+#     open-only by default and protected by two thresholds:
+#       * above _SUMMARY_AUTO_THRESHOLD items, auto-downgrades to summary shape
+#         (still returns everything, just as {ref, subject, status} triples)
+#       * above _HARD_CAP items, refuses to enumerate at all and returns a
+#         count + a note telling the caller to page or narrow their filters
+#   - page=<n>: real Taiga-native pagination via _get_page — one HTTP call,
+#     one page of results, plus total_count/has_more so the caller can walk
+#     through a large project a page at a time.
+#
+# Taiga's list APIs don't support filtering on is_closed server-side, so the
+# open-only default is applied client-side after fetching. That means a paged
+# response can return fewer than page_size items when closed items are being
+# excluded — has_more is still accurate (it's based on Taiga's own total,
+# not the post-filter count) but the count on this page may look short.
+_DEFAULT_PAGE_SIZE = 50
+_SUMMARY_AUTO_THRESHOLD = 200
+_HARD_CAP = 500
+
+
+def _list_with_guard(path: str, full_shape, summary_shape, params: dict, *,
+                      include_closed: bool, summary: bool,
+                      page: int | None, page_size: int) -> dict:
+    """Shared engine for the list_* MCP tools. See module notes above."""
+
+    def apply_open_filter(items: list) -> list:
+        if include_closed:
+            return items
+        return [i for i in items if not i.get("is_closed", False)]
+
+    if page is not None:
+        raw_items, info = _get_page(path, page, page_size, **params)
+        items = apply_open_filter(raw_items)
+        shaped = [summary_shape(i) if summary else full_shape(i) for i in items]
+        total = info["total_count"]
+        has_more = total is not None and (page * page_size) < total
+        return {
+            "items": shaped,
+            "returned_count": len(shaped),
+            "total_count": total,
+            "page": page,
+            "page_size": page_size,
+            "has_more": has_more,
+            "summary": summary,
+        }
+
+    # No page requested — probe the cheap way first (page_size=1) so we know
+    # the total before deciding whether to actually fetch everything.
+    _, probe_info = _get_page(path, 1, 1, **params)
+    total = probe_info["total_count"]
+
+    if total is not None and total > _HARD_CAP:
+        return {
+            "items": [],
+            "returned_count": 0,
+            "total_count": total,
+            "page": None,
+            "page_size": page_size,
+            "has_more": True,
+            "summary": summary,
+            "note": (
+                f"{total} items matched — above the {_HARD_CAP}-item hard cap, "
+                "so nothing was enumerated. Use page/page_size to fetch in "
+                "batches, or narrow the query with a status/sprint/epic filter."
+            ),
+        }
+
+    auto_summary = summary or (total is not None and total > _SUMMARY_AUTO_THRESHOLD)
+    raw_items = _get_all(path, **params)
+    items = apply_open_filter(raw_items)
+    shaped = [summary_shape(i) if auto_summary else full_shape(i) for i in items]
+    result = {
+        "items": shaped,
+        "returned_count": len(shaped),
+        "total_count": total,
+        "page": None,
+        "page_size": None,
+        "has_more": False,
+        "summary": auto_summary,
+    }
+    if auto_summary and not summary:
+        result["note"] = (
+            f"Auto-switched to summary mode: {total} items matched, above the "
+            f"{_SUMMARY_AUTO_THRESHOLD}-item threshold for full detail. Pass "
+            "summary=True explicitly to silence this, or page through with "
+            "page/page_size for full detail."
+        )
+    return result
 
 
 def _post(path: str, data: dict) -> dict:
@@ -368,32 +500,56 @@ def create_milestone(project_id: int, name: str,
 
 # ── User Stories ──────────────────────────────────────────────────────────────
 
+def _us_full(s: dict) -> dict:
+    return {
+        "id": s["id"],
+        "ref": s["ref"],
+        "subject": s["subject"],
+        "status": _extra(s, "status"),
+        "status_id": s.get("status"),
+        "sprint": _extra(s, "milestone"),
+        "milestone_id": s.get("milestone"),
+        "assigned_to": _extra(s, "assigned_to", "username"),
+        "points": s.get("total_points"),
+        "tags": [t[0] for t in s.get("tags", [])],
+        "is_closed": s.get("is_closed", False),
+    }
+
+
+def _us_summary(s: dict) -> dict:
+    return {"ref": s["ref"], "subject": s["subject"], "status": _extra(s, "status")}
+
+
 @mcp.tool()
 def list_user_stories(project_id: int, milestone_id: int = None,
-                      status_id: int = None, epic_id: int = None) -> list[dict]:
+                      status_id: int = None, epic_id: int = None,
+                      include_closed: bool = False, summary: bool = False,
+                      page: int = None, page_size: int = _DEFAULT_PAGE_SIZE) -> dict:
     """
     List user stories in a project.
     Optionally filter by sprint (milestone_id), status (status_id), or epic (epic_id).
-    Handles pagination automatically so all stories are returned.
+
+    Defaults to open (non-closed) stories only — pass include_closed=True to
+    include closed ones too.
+
+    Pass summary=True for a minimal {ref, subject, status} shape per story —
+    much cheaper on large projects. Pass page (1-based) with page_size to walk
+    through results a page at a time using Taiga's native pagination instead
+    of fetching everything at once.
+
+    With no page given, every matching story is still returned by default, but
+    very large result sets auto-downgrade to summary shape, and extremely large
+    ones are refused outright with a count and a suggestion to page — see the
+    "note" field in the response when that happens.
+
+    Returns {items, returned_count, total_count, page, page_size, has_more,
+    summary, note?}.
     """
-    stories = _get_all("/userstories", project=project_id,
-                       milestone=milestone_id, status=status_id, epic=epic_id)
-    return [
-        {
-            "id": s["id"],
-            "ref": s["ref"],
-            "subject": s["subject"],
-            "status": _extra(s, "status"),
-            "status_id": s.get("status"),
-            "sprint": _extra(s, "milestone"),
-            "milestone_id": s.get("milestone"),
-            "assigned_to": _extra(s, "assigned_to", "username"),
-            "points": s.get("total_points"),
-            "tags": [t[0] for t in s.get("tags", [])],
-            "is_closed": s.get("is_closed", False),
-        }
-        for s in stories
-    ]
+    return _list_with_guard(
+        "/userstories", _us_full, _us_summary,
+        {"project": project_id, "milestone": milestone_id, "status": status_id, "epic": epic_id},
+        include_closed=include_closed, summary=summary, page=page, page_size=page_size,
+    )
 
 
 @mcp.tool()
@@ -636,28 +792,52 @@ def add_comment(comment: str, prefix_ref: str = None, item_type: str = None,
 
 # ── Issues ────────────────────────────────────────────────────────────────────
 
+def _issue_full(i: dict) -> dict:
+    return {
+        "id": i["id"],
+        "ref": i["ref"],
+        "subject": i["subject"],
+        "status": _extra(i, "status"),
+        "status_id": i.get("status"),
+        "type": _extra(i, "type"),
+        "priority": _extra(i, "priority"),
+        "severity": _extra(i, "severity"),
+        "assigned_to": _extra(i, "assigned_to", "username"),
+        "tags": [t[0] for t in i.get("tags", [])],
+        "is_closed": i.get("is_closed", False),
+    }
+
+
+def _issue_summary(i: dict) -> dict:
+    return {"ref": i["ref"], "subject": i["subject"], "status": _extra(i, "status")}
+
+
 @mcp.tool()
 def list_issues(project_id: int, status_id: int = None, type_id: int = None,
-                priority_id: int = None) -> list[dict]:
-    """List issues in a project, optionally filtered by status, type, or priority."""
-    issues = _get("/issues", project=project_id, status=status_id,
-                  type=type_id, priority=priority_id)
-    return [
-        {
-            "id": i["id"],
-            "ref": i["ref"],
-            "subject": i["subject"],
-            "status": _extra(i, "status"),
-            "status_id": i.get("status"),
-            "type": _extra(i, "type"),
-            "priority": _extra(i, "priority"),
-            "severity": _extra(i, "severity"),
-            "assigned_to": _extra(i, "assigned_to", "username"),
-            "tags": [t[0] for t in i.get("tags", [])],
-            "is_closed": i.get("is_closed", False),
-        }
-        for i in issues
-    ]
+                priority_id: int = None, include_closed: bool = False,
+                summary: bool = False, page: int = None,
+                page_size: int = _DEFAULT_PAGE_SIZE) -> dict:
+    """
+    List issues in a project, optionally filtered by status, type, or priority.
+
+    Defaults to open (non-closed) issues only — pass include_closed=True to
+    include closed ones too. Pass summary=True for a minimal
+    {ref, subject, status} shape. Pass page/page_size to walk through results
+    using Taiga's native pagination instead of fetching everything at once.
+
+    With no page given, very large result sets auto-downgrade to summary
+    shape, and extremely large ones are refused outright with a count and a
+    suggestion to page — see the "note" field in the response when that
+    happens.
+
+    Returns {items, returned_count, total_count, page, page_size, has_more,
+    summary, note?}.
+    """
+    return _list_with_guard(
+        "/issues", _issue_full, _issue_summary,
+        {"project": project_id, "status": status_id, "type": type_id, "priority": priority_id},
+        include_closed=include_closed, summary=summary, page=page, page_size=page_size,
+    )
 
 
 @mcp.tool()
@@ -719,25 +899,49 @@ def update_issue(issue_id: int, subject: str = None, description: str = None,
 
 # ── Tasks ─────────────────────────────────────────────────────────────────────
 
+def _task_full(t: dict) -> dict:
+    return {
+        "id": t["id"],
+        "ref": t["ref"],
+        "subject": t["subject"],
+        "status": _extra(t, "status"),
+        "status_id": t.get("status"),
+        "user_story_id": t.get("user_story"),
+        "assigned_to": _extra(t, "assigned_to", "username"),
+        "is_closed": t.get("is_closed", False),
+    }
+
+
+def _task_summary(t: dict) -> dict:
+    return {"ref": t["ref"], "subject": t["subject"], "status": _extra(t, "status")}
+
+
 @mcp.tool()
 def list_tasks(project_id: int, milestone_id: int = None,
-               user_story_id: int = None) -> list[dict]:
-    """List tasks in a project, optionally filtered by sprint or parent user story."""
-    tasks = _get("/tasks", project=project_id,
-                 milestone=milestone_id, user_story=user_story_id)
-    return [
-        {
-            "id": t["id"],
-            "ref": t["ref"],
-            "subject": t["subject"],
-            "status": _extra(t, "status"),
-            "status_id": t.get("status"),
-            "user_story_id": t.get("user_story"),
-            "assigned_to": _extra(t, "assigned_to", "username"),
-            "is_closed": t.get("is_closed", False),
-        }
-        for t in tasks
-    ]
+               user_story_id: int = None, include_closed: bool = False,
+               summary: bool = False, page: int = None,
+               page_size: int = _DEFAULT_PAGE_SIZE) -> dict:
+    """
+    List tasks in a project, optionally filtered by sprint or parent user story.
+
+    Defaults to open (non-closed) tasks only — pass include_closed=True to
+    include closed ones too. Pass summary=True for a minimal
+    {ref, subject, status} shape. Pass page/page_size to walk through results
+    using Taiga's native pagination instead of fetching everything at once.
+
+    With no page given, very large result sets auto-downgrade to summary
+    shape, and extremely large ones are refused outright with a count and a
+    suggestion to page — see the "note" field in the response when that
+    happens.
+
+    Returns {items, returned_count, total_count, page, page_size, has_more,
+    summary, note?}.
+    """
+    return _list_with_guard(
+        "/tasks", _task_full, _task_summary,
+        {"project": project_id, "milestone": milestone_id, "user_story": user_story_id},
+        include_closed=include_closed, summary=summary, page=page, page_size=page_size,
+    )
 
 
 @mcp.tool()
@@ -787,21 +991,47 @@ def update_task(task_id: int, subject: str = None, description: str = None,
 
 # ── Epics ─────────────────────────────────────────────────────────────────────
 
+def _epic_full(e: dict) -> dict:
+    return {
+        "id": e["id"],
+        "ref": e["ref"],
+        "subject": e["subject"],
+        "status": _extra(e, "status"),
+        "status_id": e.get("status"),
+        "color": e.get("color", ""),
+        "assigned_to": _extra(e, "assigned_to", "username"),
+        "is_closed": e.get("is_closed", False),
+    }
+
+
+def _epic_summary(e: dict) -> dict:
+    return {"ref": e["ref"], "subject": e["subject"], "status": _extra(e, "status")}
+
+
 @mcp.tool()
-def list_epics(project_id: int) -> list[dict]:
-    """List all epics in a project."""
-    epics = _get("/epics", project=project_id)
-    return [
-        {
-            "id": e["id"],
-            "ref": e["ref"],
-            "subject": e["subject"],
-            "status": _extra(e, "status"),
-            "color": e.get("color", ""),
-            "assigned_to": _extra(e, "assigned_to", "username"),
-        }
-        for e in epics
-    ]
+def list_epics(project_id: int, include_closed: bool = False, summary: bool = False,
+               page: int = None, page_size: int = _DEFAULT_PAGE_SIZE) -> dict:
+    """
+    List all epics in a project.
+
+    Defaults to open (non-closed) epics only — pass include_closed=True to
+    include closed ones too. Pass summary=True for a minimal
+    {ref, subject, status} shape. Pass page/page_size to walk through results
+    using Taiga's native pagination instead of fetching everything at once.
+
+    With no page given, very large result sets auto-downgrade to summary
+    shape, and extremely large ones are refused outright with a count and a
+    suggestion to page — see the "note" field in the response when that
+    happens.
+
+    Returns {items, returned_count, total_count, page, page_size, has_more,
+    summary, note?}.
+    """
+    return _list_with_guard(
+        "/epics", _epic_full, _epic_summary,
+        {"project": project_id},
+        include_closed=include_closed, summary=summary, page=page, page_size=page_size,
+    )
 
 
 @mcp.tool()

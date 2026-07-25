@@ -43,18 +43,18 @@ Restart Claude Code after running.
 | `get_project` | Get a project with its status, type, priority, and member lists — read these to get IDs for other tools |
 | `list_milestones` | List sprints in a project |
 | `create_milestone` | Create a sprint with start/finish dates |
-| `list_user_stories` | List user stories, optionally filtered by sprint or status |
+| `list_user_stories` | List user stories, optionally filtered by sprint or status. Paged/summary — see below |
 | `get_user_story` | Get full details of a user story including description |
 | `create_user_story` | Create a user story |
 | `update_user_story` | Update subject, description, status, sprint assignment, or tags |
-| `list_issues` | List issues, optionally filtered by status, type, or priority |
+| `list_issues` | List issues, optionally filtered by status, type, or priority. Paged/summary — see below |
 | `get_issue` | Get full details of an issue including description |
 | `create_issue` | Create an issue with type, priority, and severity |
 | `update_issue` | Update subject, description, status, type, or priority |
-| `list_tasks` | List tasks, optionally filtered by sprint or parent user story |
+| `list_tasks` | List tasks, optionally filtered by sprint or parent user story. Paged/summary — see below |
 | `create_task` | Create a task, optionally linked to a user story |
 | `update_task` | Update a task's subject, status, or assignee |
-| `list_epics` | List all epics in a project |
+| `list_epics` | List all epics in a project. Paged/summary — see below |
 | `create_epic` | Create an epic with optional colour |
 | `list_wiki_pages` | List wiki page slugs for a project |
 | `get_wiki_page` | Get the Markdown content of a wiki page |
@@ -64,3 +64,36 @@ Restart Claude Code after running.
 - Create projects via the Taiga UI; this MCP manages content within projects.
 - Call `get_project` first when working with a project — it returns all status/type/priority IDs you'll need for filtering and creating items.
 - `update_user_story` accepts `clear_sprint=True` to move a story back to the backlog.
+
+### Listing large projects (`list_user_stories`, `list_issues`, `list_tasks`, `list_epics`)
+
+These four tools share a common set of extra parameters, added to stop large
+projects from overflowing the MCP/LLM response limit (this genuinely happened
+on the Home Infrastructure project):
+
+- `include_closed` (default `False`) — only open (non-closed) items are
+  returned unless you pass `True`. Filtering happens client-side, since
+  Taiga's API doesn't support filtering by closed state server-side, so a
+  paged response can return fewer than `page_size` items when closed items
+  are being excluded.
+- `summary` (default `False`) — when `True`, each item is shaped down to just
+  `{ref, subject, status}` instead of the full ~10-field dict. Much cheaper
+  for triage across a big backlog.
+- `page` / `page_size` (default page_size `50`) — when `page` is given, the
+  tool does one real Taiga-paginated request instead of fetching everything,
+  and the response includes `total_count`/`has_more` so you can walk through
+  results.
+
+All four now return a dict — `{items, returned_count, total_count, page,
+page_size, has_more, summary, note?}` — rather than a bare list. This is a
+breaking change to the return shape (TAIG-22); the `items` field holds what
+used to be the whole response.
+
+When `page` is omitted, the tool still tries to return everything by default,
+but two thresholds protect against oversized responses:
+
+- Above **200** matching items, the response auto-downgrades to summary shape
+  (still everything, just smaller per-item) and sets a `note` explaining why.
+- Above **500** matching items, the tool refuses to enumerate at all and
+  returns `total_count` plus a `note` suggesting you page through results or
+  narrow the query with a status/sprint/epic filter.
