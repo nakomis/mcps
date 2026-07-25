@@ -569,16 +569,30 @@ def list_user_stories(project_id: int, milestone_id: int = None,
     )
 
 
+def _userstory_by_ref(project_id: int, ref: int) -> dict:
+    """Resolve a project-scoped ref to its user story via Taiga's native
+    /userstories/by_ref endpoint — a single indexed lookup, instead of paging
+    the whole project and filtering client-side. The old approach pulled every
+    story in the project on each call, which is painfully slow over the mTLS
+    gateway on large projects (Home Infrastructure has 200+ stories, and each
+    by-ref call was taking minutes)."""
+    try:
+        return _get("/userstories/by_ref", project=project_id, ref=ref)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise ValueError(
+                f"No user story with ref {ref} found in project {project_id}"
+            ) from e
+        raise
+
+
 @mcp.tool()
 def get_user_story_by_ref(project_id: int, ref: int) -> dict:
     """
     Get a user story by its project-scoped ref number (e.g. the '43' in /project/home-infrastructure/us/43).
     Use this instead of get_user_story when you have a ref from a URL or the Taiga UI.
     """
-    stories = _get_all("/userstories", project=project_id)
-    match = next((s for s in stories if s["ref"] == ref), None)
-    if match is None:
-        raise ValueError(f"No user story with ref {ref} found in project {project_id}")
+    match = _userstory_by_ref(project_id, ref)
     return get_user_story(match["id"])
 
 
@@ -607,11 +621,12 @@ def _fetch_story_context(prefix_ref: str) -> dict:
 
     project_id = project_stub["id"]
     full_project = _get(f"/projects/{project_id}")
-    all_stories = _get_all("/userstories", project=project_id)
-
-    match = next((s for s in all_stories if s["ref"] == ref), None)
-    if match is None:
-        raise ValueError(f"No story with ref {ref} in project '{full_project['name']}'")
+    try:
+        match = _userstory_by_ref(project_id, ref)
+    except ValueError as e:
+        raise ValueError(
+            f"No story with ref {ref} in project '{full_project['name']}'"
+        ) from e
 
     full_story = _get(f"/userstories/{match['id']}")
     comments = _get_comments("userstory", match["id"])
