@@ -42,6 +42,7 @@ from botocore.exceptions import (
 )
 from mcp.server.fastmcp import FastMCP
 from PIL import Image
+from pydantic import BaseModel, Field
 
 mcp = FastMCP("falai-mcp")
 
@@ -259,18 +260,68 @@ def _call(url: str, payload: dict) -> dict:
         return r.json()
 
 
-def _fetch_result(result: dict, prompt: str, save_dir: str, fmt: str) -> str:
+class ImageResult(BaseModel):
+    """What a tool hands back. Typed so callers can inspect it, not parse it."""
+
+    path: str = Field(description="Absolute path to the saved image. Read it to view.")
+    width: int = Field(description="Actual width in pixels")
+    height: int = Field(description="Actual height in pixels")
+    size_kb: int = Field(description="File size in kilobytes")
+    seed: int | None = Field(default=None, description="Seed used — reuse to reproduce")
+    requested_width: int = Field(default=0, description="Width asked for, 0 if unspecified")
+    requested_height: int = Field(default=0, description="Height asked for, 0 if unspecified")
+    size_honoured: bool = Field(
+        default=True,
+        description="False when the returned image is not the size requested",
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Anything the caller should relay to the user. Usually empty.",
+    )
+
+
+def _fetch_result(
+    result: dict,
+    prompt: str,
+    save_dir: str,
+    fmt: str,
+    requested: tuple[int, int] = (0, 0),
+) -> ImageResult:
     images = result.get("images") or []
     if not images:
-        return "fal.ai returned no images."
+        raise RuntimeError("fal.ai returned no images.")
+
     with httpx.Client(timeout=_TIMEOUT, follow_redirects=True) as client:
         data = client.get(images[0]["url"]).content
     path = _save(data, prompt, save_dir, fmt)
+
     meta = images[0]
-    return (
-        f"{path}\n"
-        f"({meta.get('width')}x{meta.get('height')}, {len(data) // 1024} KB, "
-        f"seed {result.get('seed')})"
+    width, height = int(meta.get("width", 0)), int(meta.get("height", 0))
+    req_w, req_h = requested
+
+    warnings: list[str] = []
+    honoured = True
+    # fal silently clamps below ~256px and rounds odd dimensions to its own
+    # grid — no error, no warning, just a different size in the response. Say
+    # so, rather than letting the caller assume it got what it asked for.
+    if req_w > 0 and req_h > 0 and (req_w, req_h) != (width, height):
+        honoured = False
+        warnings.append(
+            f"Requested {req_w}x{req_h} but fal.ai returned {width}x{height}. "
+            "It clamps below 256px and snaps to its own size grid. "
+            "Tell the user, and downscale locally if the exact size matters."
+        )
+
+    return ImageResult(
+        path=str(path),
+        width=width,
+        height=height,
+        size_kb=len(data) // 1024,
+        seed=result.get("seed"),
+        requested_width=req_w,
+        requested_height=req_h,
+        size_honoured=honoured,
+        warnings=warnings,
     )
 
 
@@ -285,7 +336,7 @@ def generate_image(
     output_format: str = "png",
     seed: int = -1,
     save_dir: str = "",
-) -> str:
+) -> ImageResult:
     """
     Generate an image from a text prompt using FLUX.2 [pro] on fal.ai.
 
@@ -311,7 +362,9 @@ def generate_image(
     if seed >= 0:
         payload["seed"] = seed
 
-    return _fetch_result(_call(GENERATE_URL, payload), prompt, save_dir, output_format)
+    return _fetch_result(
+        _call(GENERATE_URL, payload), prompt, save_dir, output_format, (width, height)
+    )
 
 
 @mcp.tool()
@@ -325,7 +378,7 @@ def edit_image(
     output_format: str = "png",
     seed: int = -1,
     save_dir: str = "",
-) -> str:
+) -> ImageResult:
     """
     Edit an existing image with a natural-language instruction, using
     FLUX.2 [pro] edit on fal.ai.
@@ -384,7 +437,7 @@ def edit_image(
             payload["seed"] = seed
         result = _call(EDIT_URL, payload)
 
-    return _fetch_result(result, prompt, target, output_format)
+    return _fetch_result(result, prompt, target, output_format, (width, height))
 
 
 @mcp.tool()
@@ -396,7 +449,7 @@ def remove_object(
     max_dimension: int = 0,
     output_format: str = "png",
     save_dir: str = "",
-) -> str:
+) -> ImageResult:
     """
     Delete an object from a photo, leaving the rest of the image intact.
 

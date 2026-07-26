@@ -99,6 +99,27 @@ nothing. "Delete the golden retriever completely. The lawn must be entirely
 empty grass where the dog was" worked. Be explicit and state the required end
 state, not the action.
 
+## Structured output
+
+Every tool returns an `ImageResult`, not a string, so MCP emits a real
+`outputSchema` and callers can inspect fields rather than parse prose:
+
+```json
+{
+  "path": "/Users/nakomis/Pictures/falai-mcp/20260726_173221_a_tiny_grey_mouse.png",
+  "width": 256, "height": 256, "size_kb": 118, "seed": 798931316,
+  "requested_width": 128, "requested_height": 128,
+  "size_honoured": false,
+  "warnings": ["Requested 128x128 but fal.ai returned 256x256. ..."]
+}
+```
+
+`warnings` is empty on the happy path. It exists because **fal silently clamps
+sizes below 256px** and snaps to its own grid — no error, no warning, just a
+different number in the response. Ask for 128×128 and you get 256×256 back as
+though nothing happened. `size_honoured` is the boolean to branch on;
+downscale locally when an exact size matters.
+
 ## Output
 
 Generated images land in `~/Pictures/falai-mcp/`. Edits and removals are
