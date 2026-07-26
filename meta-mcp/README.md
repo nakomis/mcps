@@ -62,4 +62,4 @@ The sub-MCPs do not need entries in `settings.json` — they are managed entirel
 
 ## Sub-MCP compatibility
 
-Any MCP server that uses stdio transport (the default) works as a sub-MCP. The existing MCPs in this repo (`ollama-mcp`, `draw-things-mcp`, `tplink-deco-mcp`, etc.) are all compatible and remain independently installable for use without meta-mcp.
+Any MCP server that uses stdio transport (the default) works as a sub-MCP. The existing MCPs in this repo (`ollama-mcp`, `falai-mcp`, `tplink-deco-mcp`, etc.) are all compatible and remain independently installable for use without meta-mcp.

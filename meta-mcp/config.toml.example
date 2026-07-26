@@ -17,6 +17,7 @@ description = "local LLM inference"
 command = ["npx", "-y", "@ollama/mcp"]
 
 [[mcps]]
-name = "draw-things"
-description = "local image generation"
-command = ["npx", "-y", "@draw-things/mcp"]
+name = "image-gen"
+description = "image generation & editing (fal.ai FLUX.2)"
+command = ["uv", "--directory", "/path/to/mcps/falai-mcp", "run", "falai-mcp"]
+env = {AWS_PROFILE = "your-profile", AWS_REGION = "eu-west-2"}
