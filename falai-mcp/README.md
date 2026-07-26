@@ -52,6 +52,23 @@ Base64 data URIs also work and were the first implementation, but they cap out
 on request size and would have meant downscaling phone photos before upload.
 S3 keeps full resolution. Pass `max_dimension` to downscale deliberately.
 
+### Expired SSO credentials
+
+Local AWS credentials lapse often. Every flavour of that failure — missing
+token cache, expired token, refused refresh, or a `ClientError` arriving
+mid-call because the session died between constructing the client and using it
+— is caught and re-raised as `AwsLoginRequired`, carrying an instruction to
+stop and ask the user to run:
+
+```bash
+aws sso login
+```
+
+No `--profile` flag: every profile shares one IAM Identity Center session. The
+message tells the calling model explicitly *not* to run the command itself,
+since it opens a browser and blocks on interactive sign-in, and notes that
+`generate_image` still works meanwhile.
+
 ### The regional endpoint gotcha
 
 The presigned URL **must** use `s3.<region>.amazonaws.com`, not the global

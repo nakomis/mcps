@@ -30,6 +30,16 @@ from pathlib import Path
 import boto3
 import httpx
 from botocore.config import Config as BotoConfig
+from botocore.exceptions import (
+    ClientError,
+    CredentialRetrievalError,
+    NoCredentialsError,
+    ProfileNotFound,
+    SSOError,
+    SSOTokenLoadError,
+    TokenRetrievalError,
+    UnauthorizedSSOTokenError,
+)
 from mcp.server.fastmcp import FastMCP
 from PIL import Image
 
@@ -43,6 +53,31 @@ DEFAULT_SAVE_DIR = Path.home() / "Pictures" / "falai-mcp"
 
 BUCKET = os.environ.get("FALAI_BUCKET", "nak-sandbox-falai-uploads")
 REGION = os.environ.get("AWS_REGION", "eu-west-2")
+AWS_PROFILE = os.environ.get("AWS_PROFILE", "")
+
+# botocore raises a different class depending on where the SSO session gives
+# out — token cache missing, token present but expired, refresh refused.
+_CREDENTIAL_EXCEPTIONS = (
+    NoCredentialsError,
+    CredentialRetrievalError,
+    ProfileNotFound,
+    SSOError,
+    SSOTokenLoadError,
+    TokenRetrievalError,
+    UnauthorizedSSOTokenError,
+)
+
+# ...and when the credentials were valid at client-construction time but have
+# since lapsed, it surfaces as a ClientError with one of these codes instead.
+_EXPIRED_ERROR_CODES = {
+    "ExpiredToken",
+    "ExpiredTokenException",
+    "InvalidClientTokenId",
+    "RequestExpired",
+    "UnrecognizedClientException",
+    "InvalidAccessKeyId",
+    "AccessDenied",
+}
 
 # Long enough for fal to fetch the image, short enough that a leaked URL is
 # worthless by the time anyone finds it.
@@ -104,6 +139,47 @@ def _read_image(image_path: str, max_dimension: int) -> tuple[bytes, str]:
     return buf.getvalue(), "image/png"
 
 
+class AwsLoginRequired(RuntimeError):
+    """Raised when the SSO session has lapsed and only the user can fix it."""
+
+
+# Addressed at the calling model, not at a human reading a log: it has to know
+# to stop and relay this rather than retry, and that it cannot run the command
+# itself (aws sso login opens a browser and blocks on interactive sign-in).
+_LOGIN_MESSAGE = """\
+AWS SSO credentials have expired or are missing{detail}.
+
+STOP and tell the user to run this in their terminal, then retry:
+
+    aws sso login
+
+Do not attempt to run it yourself — it opens a browser for interactive
+sign-in and will hang. Every profile shares one IAM Identity Center session,
+so no --profile flag is needed.
+
+Only the editing tools need AWS; generate_image still works without it.\
+"""
+
+
+def _login_required(exc: Exception) -> AwsLoginRequired:
+    detail = f" for profile {AWS_PROFILE!r}" if AWS_PROFILE else ""
+    return AwsLoginRequired(_LOGIN_MESSAGE.format(detail=detail) + f"\n\n({exc})")
+
+
+@contextmanager
+def _aws_credentials():
+    """Translate every flavour of expired-credential error into one clear ask."""
+    try:
+        yield
+    except _CREDENTIAL_EXCEPTIONS as e:
+        raise _login_required(e) from e
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in _EXPIRED_ERROR_CODES:
+            raise _login_required(e) from e
+        raise
+
+
 @contextmanager
 def _staged_urls(image_paths: list[str], max_dimension: int = 0):
     """Upload images, yield presigned GET URLs, then delete them again.
@@ -113,27 +189,33 @@ def _staged_urls(image_paths: list[str], max_dimension: int = 0):
     # Pin the regional endpoint. The default global s3.amazonaws.com host
     # answers with a 307 to the regional one, and fal's fetcher does not
     # follow redirects — the call comes back as an opaque 500.
-    s3 = boto3.client(
-        "s3",
-        region_name=REGION,
-        endpoint_url=f"https://s3.{REGION}.amazonaws.com",
-        config=BotoConfig(signature_version="s3v4", s3={"addressing_style": "virtual"}),
-    )
+    with _aws_credentials():
+        s3 = boto3.client(
+            "s3",
+            region_name=REGION,
+            endpoint_url=f"https://s3.{REGION}.amazonaws.com",
+            config=BotoConfig(
+                signature_version="s3v4", s3={"addressing_style": "virtual"}
+            ),
+        )
     keys: list[str] = []
     try:
         urls = []
         for image_path in image_paths:
             data, content_type = _read_image(image_path, max_dimension)
             key = f"{uuid.uuid4().hex}{Path(image_path).suffix or '.png'}"
-            s3.put_object(Bucket=BUCKET, Key=key, Body=data, ContentType=content_type)
-            keys.append(key)
-            urls.append(
-                s3.generate_presigned_url(
-                    "get_object",
-                    Params={"Bucket": BUCKET, "Key": key},
-                    ExpiresIn=URL_TTL_SECONDS,
+            with _aws_credentials():
+                s3.put_object(
+                    Bucket=BUCKET, Key=key, Body=data, ContentType=content_type
                 )
-            )
+                keys.append(key)
+                urls.append(
+                    s3.generate_presigned_url(
+                        "get_object",
+                        Params={"Bucket": BUCKET, "Key": key},
+                        ExpiresIn=URL_TTL_SECONDS,
+                    )
+                )
         yield urls
     finally:
         for key in keys:
