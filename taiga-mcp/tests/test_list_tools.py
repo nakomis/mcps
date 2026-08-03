@@ -19,7 +19,7 @@ def test_list_user_stories_passes_filters_through(monkeypatch):
         captured["params"] = params
         return [{"id": 1, "ref": 1, "subject": "s", "status": None, "status_id": 1,
                   "milestone": None, "assigned_to": None, "total_points": None,
-                  "tags": [], "is_closed": False}]
+                  "tags": [], "is_closed": False, "total_comments": 3}]
 
     monkeypatch.setattr(server, "_get_page", lambda *a, **k: ([], {"total_count": 1}))
     monkeypatch.setattr(server, "_get_all", fake_get_all)
@@ -29,6 +29,7 @@ def test_list_user_stories_passes_filters_through(monkeypatch):
     assert captured["path"] == "/userstories"
     assert captured["params"] == {"project": 5, "milestone": 9, "status": 2, "epic": 3}
     assert result["items"][0]["ref"] == 1
+    assert result["items"][0]["comment_count"] == 3
     assert result["summary"] is False
 
 
@@ -50,12 +51,14 @@ def test_list_issues_default_shape(monkeypatch):
 def test_list_tasks_summary_mode(monkeypatch):
     task = {"id": 1, "ref": 20, "subject": "chore",
             "status": 1, "status_extra_info": {"name": "Open"},
-            "user_story": None, "assigned_to": None, "is_closed": False}
+            "user_story": None, "assigned_to": None, "is_closed": False,
+            "total_comments": 2}
     _stub(monkeypatch, 1, [task])
 
     result = server.list_tasks(project_id=1, summary=True)
 
-    assert result["items"] == [{"ref": 20, "subject": "chore", "status": "Open"}]
+    assert result["items"] == [{"ref": 20, "subject": "chore", "status": "Open",
+                                "comment_count": 2}]
     assert result["summary"] is True
 
 

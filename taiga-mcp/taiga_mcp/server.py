@@ -270,7 +270,7 @@ def _extra(obj: dict, key: str, field: str = "name") -> str | None:
 
 
 def _get_comments(item_type: str, item_id: int) -> list[dict]:
-    """Fetch comments from the history endpoint for a story, issue, or task."""
+    """Fetch comments from the history endpoint for a story, issue, task or epic."""
     entries = _get(f"/history/{item_type}/{item_id}")
     return [
         {
@@ -283,6 +283,18 @@ def _get_comments(item_type: str, item_id: int) -> list[dict]:
         for e in entries
         if e.get("comment") and not e.get("is_hidden", False)
     ]
+
+
+def _comment_count(obj: dict) -> int:
+    """Comment count straight off a list/detail payload — no extra request.
+
+    Taiga carries a `total_comments` counter on user stories and tasks, so the
+    list tools for those can advertise "there are comments here, go and read
+    them" for free. Issues and epics have no equivalent field on either their
+    list or their detail endpoint, so their list tools can't offer one without
+    an N+1 walk of /history — see the docstrings on list_issues/list_epics.
+    """
+    return obj.get("total_comments", 0)
 
 
 # ── Projects ──────────────────────────────────────────────────────────────────
@@ -530,11 +542,13 @@ def _us_full(s: dict) -> dict:
         "points": s.get("total_points"),
         "tags": [t[0] for t in s.get("tags", [])],
         "is_closed": s.get("is_closed", False),
+        "comment_count": _comment_count(s),
     }
 
 
 def _us_summary(s: dict) -> dict:
-    return {"ref": s["ref"], "subject": s["subject"], "status": _extra(s, "status")}
+    return {"ref": s["ref"], "subject": s["subject"], "status": _extra(s, "status"),
+            "comment_count": _comment_count(s)}
 
 
 @mcp.tool()
@@ -558,6 +572,12 @@ def list_user_stories(project_id: int, milestone_id: int = None,
     very large result sets auto-downgrade to summary shape, and extremely large
     ones are refused outright with a count and a suggestion to page — see the
     "note" field in the response when that happens.
+
+    Comment TEXT is never included here — fetching it would cost one extra
+    request per story. Every item does carry comment_count, in both full and
+    summary shape, so a non-zero count is your signal that there is discussion
+    on that story you have not read. Pull it with get_story/get_user_story
+    before drawing conclusions about the story.
 
     Returns {items, returned_count, total_count, page, page_size, has_more,
     summary, note?}.
@@ -862,6 +882,12 @@ def list_issues(project_id: int, status_id: int = None, type_id: int = None,
     suggestion to page — see the "note" field in the response when that
     happens.
 
+    Comments are NOT included, and — unlike stories and tasks — Taiga's issue
+    endpoints carry no comment counter, so this response cannot even tell you
+    which issues have comments. Treat every issue here as possibly having
+    unread discussion, and call get_issue on any you intend to act or report
+    on.
+
     Returns {items, returned_count, total_count, page, page_size, has_more,
     summary, note?}.
     """
@@ -874,7 +900,7 @@ def list_issues(project_id: int, status_id: int = None, type_id: int = None,
 
 @mcp.tool()
 def get_issue(issue_id: int) -> dict:
-    """Get full details of an issue including description."""
+    """Get full details of an issue including description and comments."""
     i = _get(f"/issues/{issue_id}")
     return {
         "id": i["id"],
@@ -888,6 +914,8 @@ def get_issue(issue_id: int) -> dict:
         "severity": _extra(i, "severity"),
         "assigned_to": _extra(i, "assigned_to", "username"),
         "tags": [t[0] for t in i.get("tags", [])],
+        "is_closed": i.get("is_closed", False),
+        "comments": _get_comments("issue", issue_id),
     }
 
 
@@ -941,11 +969,13 @@ def _task_full(t: dict) -> dict:
         "user_story_id": t.get("user_story"),
         "assigned_to": _extra(t, "assigned_to", "username"),
         "is_closed": t.get("is_closed", False),
+        "comment_count": _comment_count(t),
     }
 
 
 def _task_summary(t: dict) -> dict:
-    return {"ref": t["ref"], "subject": t["subject"], "status": _extra(t, "status")}
+    return {"ref": t["ref"], "subject": t["subject"], "status": _extra(t, "status"),
+            "comment_count": _comment_count(t)}
 
 
 @mcp.tool()
@@ -965,6 +995,10 @@ def list_tasks(project_id: int, milestone_id: int = None,
     shape, and extremely large ones are refused outright with a count and a
     suggestion to page — see the "note" field in the response when that
     happens.
+
+    Comment TEXT is never included here, but every item carries comment_count,
+    in both full and summary shape — a non-zero count means there is discussion
+    on that task you have not read. Pull it with get_task.
 
     Returns {items, returned_count, total_count, page, page_size, has_more,
     summary, note?}.
@@ -992,7 +1026,7 @@ def create_task(project_id: int, subject: str, user_story_id: int = None,
 
 @mcp.tool()
 def get_task(task_id: int) -> dict:
-    """Get full details of a task including description."""
+    """Get full details of a task including description and comments."""
     t = _get(f"/tasks/{task_id}")
     return {
         "id": t["id"],
@@ -1004,6 +1038,7 @@ def get_task(task_id: int) -> dict:
         "user_story_id": t.get("user_story"),
         "assigned_to": _extra(t, "assigned_to", "username"),
         "is_closed": t.get("is_closed", False),
+        "comments": _get_comments("task", task_id),
     }
 
 
@@ -1056,6 +1091,11 @@ def list_epics(project_id: int, include_closed: bool = False, summary: bool = Fa
     suggestion to page — see the "note" field in the response when that
     happens.
 
+    Comments are NOT included, and — unlike stories and tasks — Taiga's epic
+    endpoints carry no comment counter, so this response cannot even tell you
+    which epics have comments. Call get_epic on any you intend to act or
+    report on.
+
     Returns {items, returned_count, total_count, page, page_size, has_more,
     summary, note?}.
     """
@@ -1064,6 +1104,28 @@ def list_epics(project_id: int, include_closed: bool = False, summary: bool = Fa
         {"project": project_id},
         include_closed=include_closed, summary=summary, page=page, page_size=page_size,
     )
+
+
+@mcp.tool()
+def get_epic(epic_id: int) -> dict:
+    """Get full details of an epic including description and comments.
+    list_epics cannot report a comment count, so this is the only way to see
+    whether an epic carries discussion.
+    """
+    e = _get(f"/epics/{epic_id}")
+    return {
+        "id": e["id"],
+        "ref": e["ref"],
+        "subject": e["subject"],
+        "description": e.get("description", ""),
+        "status": _extra(e, "status"),
+        "status_id": e.get("status"),
+        "color": e.get("color", ""),
+        "assigned_to": _extra(e, "assigned_to", "username"),
+        "tags": [t[0] for t in e.get("tags", [])],
+        "is_closed": e.get("is_closed", False),
+        "comments": _get_comments("epic", epic_id),
+    }
 
 
 @mcp.tool()

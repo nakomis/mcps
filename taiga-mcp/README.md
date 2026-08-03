@@ -44,17 +44,20 @@ Restart Claude Code after running.
 | `list_milestones` | List sprints in a project |
 | `create_milestone` | Create a sprint with start/finish dates |
 | `list_user_stories` | List user stories, optionally filtered by sprint or status. Paged/summary — see below |
-| `get_user_story` | Get full details of a user story including description |
+| `get_user_story` | Get full details of a user story including description and comments |
 | `create_user_story` | Create a user story |
 | `update_user_story` | Update subject, description, status, sprint assignment, or tags |
+| `add_comment` | Add a comment to a user story, issue, or task |
 | `list_issues` | List issues, optionally filtered by status, type, or priority. Paged/summary — see below |
-| `get_issue` | Get full details of an issue including description |
+| `get_issue` | Get full details of an issue including description and comments |
 | `create_issue` | Create an issue with type, priority, and severity |
 | `update_issue` | Update subject, description, status, type, or priority |
 | `list_tasks` | List tasks, optionally filtered by sprint or parent user story. Paged/summary — see below |
+| `get_task` | Get full details of a task including description and comments |
 | `create_task` | Create a task, optionally linked to a user story |
 | `update_task` | Update a task's subject, status, or assignee |
 | `list_epics` | List all epics in a project. Paged/summary — see below |
+| `get_epic` | Get full details of an epic including description and comments |
 | `create_epic` | Create an epic with optional colour |
 | `list_wiki_pages` | List wiki page slugs for a project |
 | `get_wiki_page` | Get the Markdown content of a wiki page |
@@ -64,6 +67,25 @@ Restart Claude Code after running.
 - Create projects via the Taiga UI; this MCP manages content within projects.
 - Call `get_project` first when working with a project — it returns all status/type/priority IDs you'll need for filtering and creating items.
 - `update_user_story` accepts `clear_sprint=True` to move a story back to the backlog.
+
+### Comments
+
+Real decisions live in Taiga comments, so no read tool is allowed to stay
+silent about them:
+
+- Every `get_*` tool — `get_story`, `get_user_story`, `get_user_story_by_ref`,
+  `pick_up_story`, `get_issue`, `get_task`, `get_epic` — returns the full
+  `comments` array (author, text, timestamp), hidden/deleted entries excluded.
+- The `list_*` tools never inline comment text: that would be one extra request
+  per item, and Home Infrastructure alone has hundreds of stories.
+- `list_user_stories` and `list_tasks` instead return `comment_count` on every
+  item, in both full and summary shape. It comes free from Taiga's
+  `total_comments` field, so it costs nothing. A non-zero count is the cue to
+  go and read before drawing conclusions.
+- `list_issues` and `list_epics` return **no** count, because Taiga's issue and
+  epic endpoints carry no `total_comments` field at all — there is nothing to
+  report cheaply. Assume any issue or epic may have unread discussion and call
+  `get_issue`/`get_epic` on the ones that matter.
 
 ### Listing large projects (`list_user_stories`, `list_issues`, `list_tasks`, `list_epics`)
 
