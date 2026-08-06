@@ -1,15 +1,17 @@
 [project]
-name = "draw-things-mcp"
+name = "falai-mcp"
 version = "0.1.0"
-description = "MCP server for Draw Things — local AI image generation"
+description = "MCP server for hosted image generation and editing via fal.ai (FLUX.2 pro)"
 requires-python = ">=3.11"
 dependencies = [
     "mcp[cli]>=1.0.0",
     "httpx>=0.27.0",
+    "pillow>=11.0.0",
+    "boto3>=1.35.0",
 ]
 
 [project.scripts]
-draw-things-mcp = "draw_things_mcp.server:main"
+falai-mcp = "falai_mcp.server:main"
 
 [build-system]
 requires = ["hatchling"]

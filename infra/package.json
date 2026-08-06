@@ -1,0 +1,27 @@
+{
+  "name": "mcps-infra",
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.5.1",
+  "bin": {
+    "mcps": "bin/mcps.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "cdk": "cdk",
+    "deploy-sandbox": "cdk deploy --profile nakom.is-sandbox --require-approval never",
+    "synth-sandbox": "cdk synth --profile nakom.is-sandbox",
+    "destroy-sandbox": "cdk destroy --profile nakom.is-sandbox",
+    "update-dependencies": "pnpm dlx npm-check-updates -u && pnpm install"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.257.0",
+    "constructs": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "25.x",
+    "aws-cdk": "^2.1125.0",
+    "ts-node": "^10.9.2",
+    "typescript": "~6.0.3"
+  }
+}
