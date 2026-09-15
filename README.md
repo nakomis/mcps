@@ -13,6 +13,7 @@ If you find this useful, please consider buying me a coffee:
 | Server | Description |
 |---|---|
 | [evernote-mcp](evernote-mcp/) | Read-only access to Evernote notes via exported .enex files |
+| [plane-mcp](plane-mcp/) | Read/write access to the self-hosted Plane (work items by ref, e.g. HOME-42) |
 | [trello-mcp](trello-mcp/) | Read/write access to Trello boards, lists, and cards |
 | [falai-mcp](falai-mcp/) | Image generation, editing, and object removal via fal.ai FLUX.2 |
 
