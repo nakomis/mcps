@@ -1,16 +1,57 @@
 # falai-mcp
 
-Hosted image generation and editing via [fal.ai](https://fal.ai), using
-FLUX.2 [pro]. Replaces `draw-things-mcp`, which needed the Draw Things app
-running locally and stopped working when it was uninstalled.
+Hosted image generation and editing via [fal.ai](https://fal.ai), defaulting
+to Seedream 5.0 Pro. Replaces `draw-things-mcp`, which needed the Draw Things
+app running locally and stopped working when it was uninstalled.
 
 ## Tools
 
-| Tool | Model | Use it for |
+| Tool | Default model | Use it for |
 |---|---|---|
-| `generate_image` | `fal-ai/flux-2-pro` | Text prompt → new image, any size |
-| `edit_image` | `fal-ai/flux-2-pro/edit` | Instruction-driven edits, up to 4 reference images |
+| `generate_image` | `bytedance/seedream/v5/pro/text-to-image` | Text prompt → new image, any size |
+| `edit_image` | `bytedance/seedream/v5/pro/edit` | Instruction-driven edits, up to 4 reference images |
 | `remove_object` | `fal-ai/object-removal` | Deleting something from a photo |
+
+## Choosing a model
+
+Every tool takes `model`. For `generate_image` and `edit_image` the choices are
+`seedream` (default), `gpt-image`, and `flux`.
+
+**The default is perishable.** This server hardcoded `flux-2-pro` until
+2026-08-06, which was the right call when it was written on 2026-07-26 and last
+of six eleven days later. Measured on a prompt requiring eight distinct gilt
+titles across eight book spines:
+
+| Model | Titles correct |
+|---|---|
+| Seedream 5.0 Pro | **8/8** |
+| GPT Image 2 | **8/8** |
+| Nano Banana Pro | 7/8 |
+| FLUX.2 [pro] | 3/8 — *"MOBY THE BEAGLE"*, *"MOBY DI DICK"* |
+| Ideogram v3 | 3/8, and ignored the composition constraints |
+| Qwen-Image | 2/8 — *"SPEGIES"*, *"SHESEHOLD MANAGEMENT"* |
+
+Nothing about FLUX got worse; the field moved underneath it. Re-measure before
+trusting the default, and note that a constant which looks deliberate tells you
+nothing about its age.
+
+**Seeds.** Only `flux` accepts one. Seedream and GPT Image have no seed
+parameter, so passing `seed` to them returns a warning saying the image cannot
+be reproduced, rather than silently dropping it.
+
+`nano-banana-pro` is not wired up: it takes `aspect_ratio` and `resolution`
+instead of `image_size`, so adding it without translating those would silently
+ignore every size argument.
+
+## Low-balance warning
+
+Every result carries a `warnings` list. When the fal.ai balance falls below
+**$5**, a warning is added telling the caller to mention it. Override with
+`FALAI_LOW_BALANCE`.
+
+The check runs *after* the image has been fetched and swallows every failure,
+so a slow or changed billing endpoint can cost you a warning but never the
+picture you already paid for.
 
 ### Which editing tool?
 
