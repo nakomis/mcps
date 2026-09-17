@@ -15,6 +15,7 @@ import time
 
 import logging
 
+import boto3
 import httpx
 import markdown as md
 from markdownify import markdownify
@@ -96,12 +97,26 @@ def _text(html: str | None) -> str:
     return markdownify(html or "", heading_style="ATX").strip()
 
 
-# ── Lookups (cached per process; projects and their states change rarely) ─────
+# ── Lookups (cached briefly; projects and their states change rarely) ─────────
+
+# Claude sessions live for days, so the cache expires rather than lasting the
+# whole process: a project created from another session shows up within this
+# many seconds, or at once with refresh=True.
+CACHE_TTL = int(os.environ.get("PLANE_CACHE_TTL", "300"))
 
 _cache: dict = {}
+_cache_loaded_at = 0.0
 
 
-def _projects(include_archived: bool = False) -> list[dict]:
+def _refresh_if_stale(force: bool = False) -> None:
+    global _cache_loaded_at
+    if force or time.monotonic() - _cache_loaded_at > CACHE_TTL:
+        _cache.clear()
+        _cache_loaded_at = time.monotonic()
+
+
+def _projects(include_archived: bool = False, refresh: bool = False) -> list[dict]:
+    _refresh_if_stale(refresh)
     if "projects" not in _cache:
         _cache["projects"] = _get_all("/projects/")
     return [p for p in _cache["projects"] if include_archived or not p.get("archived_at")]
@@ -110,9 +125,7 @@ def _projects(include_archived: bool = False) -> list[dict]:
 def _project(identifier: str) -> dict:
     ident = identifier.strip().upper()
     for refresh in (False, True):
-        if refresh:
-            _cache.clear()
-        p = next((p for p in _projects(include_archived=True) if p["identifier"] == ident), None)
+        p = next((p for p in _projects(include_archived=True, refresh=refresh) if p["identifier"] == ident), None)
         if p:
             return p
     known = sorted(p["identifier"] for p in _projects())
@@ -246,17 +259,20 @@ def _story(p: dict, item: dict) -> dict:
 # ── Projects ──────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def list_projects(include_archived: bool = False) -> list[dict]:
-    """List Plane projects: identifier (the ref prefix, e.g. HOME), name, and whether archived."""
+def list_projects(include_archived: bool = False, refresh: bool = False) -> list[dict]:
+    """List Plane projects: identifier (the ref prefix, e.g. HOME), name, and whether archived.
+    The list is cached for a few minutes; refresh=True re-reads it now."""
     return [{"identifier": p["identifier"], "name": p["name"], "archived": bool(p.get("archived_at")),
              "description": (p.get("description") or "")[:200]}
-            for p in sorted(_projects(include_archived), key=lambda p: p["identifier"])]
+            for p in sorted(_projects(include_archived, refresh), key=lambda p: p["identifier"])]
 
 
 @mcp.tool()
-def get_project(identifier: str) -> dict:
+def get_project(identifier: str, refresh: bool = False) -> dict:
     """Get a project's states (with their group), labels, and members. Use the
-    names from here in create_work_item / update_work_item."""
+    names from here in create_work_item / update_work_item. Cached for a few
+    minutes; refresh=True re-reads it now."""
+    _refresh_if_stale(refresh)
     p = _project(identifier)
     meta = _project_meta(p)
     return {
@@ -273,7 +289,10 @@ def get_project(identifier: str) -> dict:
 def create_project(name: str, identifier: str, description: str = "") -> dict:
     """Create a project. identifier is the ref prefix: up to 12 letters/digits,
     e.g. HOME. Plane rejects names containing - . & + , : ; $ ^ { } * = ? @ # | ' < > ( ) % !
-    Martin (martin@nakomis.com) and plane@nakomis.com are added as admins."""
+    Martin (martin@nakomis.com) and plane@nakomis.com are added as admins, and
+    the project is registered with the nakom.is shortener (see
+    sync_shortener_projects). A failed registration is reported under
+    "shortener" rather than failing the call."""
     ident = identifier.strip().upper()
     if not re.fullmatch(r"[A-Z0-9]{1,12}", ident):
         raise ValueError("identifier must be 1-12 letters or digits")
@@ -283,7 +302,7 @@ def create_project(name: str, identifier: str, description: str = "") -> dict:
         "name": name, "identifier": ident, "description": description, "network": 0,
         "module_view": True, "cycle_view": True, "issue_views_view": True, "page_view": True,
     })
-    _cache.clear()
+    _refresh_if_stale(force=True)
     members = {m["member"]["email"] if isinstance(m.get("member"), dict) else m.get("email"): m
                for m in _get_all("/members/")}
     for email in ("martin@nakomis.com", "plane@nakomis.com"):
@@ -294,7 +313,65 @@ def create_project(name: str, identifier: str, description: str = "") -> dict:
                 _request("POST", f"/projects/{p['id']}/project-members/", json={"member": uid, "role": 20})
             except RuntimeError:
                 pass  # already a member (e.g. the creator)
-    return get_project(ident)
+    result = get_project(ident)
+    result["shortener"] = _sync_shortener_project(_project(ident))
+    return result
+
+
+@mcp.tool()
+def sync_shortener_projects() -> dict:
+    """Register every Plane project (archived ones included) with the nakom.is
+    shortener, so nakom.is/plane/<identifier> and nakom.is/plane/<identifier> <n>
+    work. create_project does this for new projects; use this to backfill, or
+    to recover from a failed registration. Upserts only and never deletes, so
+    hand-added aliases (e.g. nako → NAKIS) are left alone."""
+    projects = sorted(_projects(include_archived=True, refresh=True), key=lambda p: p["identifier"])
+    results = [_sync_shortener_project(p) for p in projects]
+    return {
+        "table": SHORTENER_TABLE,
+        "synced": [r["alias"] for r in results if r["synced"]],
+        "failed": [r for r in results if not r["synced"]],
+    }
+
+
+# ── nakom.is shortener ────────────────────────────────────────────────────────
+#
+# nakom.is/plane/<alias> [<ref>] redirects to a project's work items page, or to
+# one of its work items, from a row per project in the ticket-projects DynamoDB
+# table. The shortener's Lambda never talks to Plane, so this MCP keeps that
+# table in step. It authenticates through IAM Roles Anywhere (AWS profile
+# plane-mcp, client certificate CN plane-mcp); the role may only UpdateItem.
+
+SHORTENER_TABLE = os.environ.get("SHORTENER_TABLE", "ticket-projects")
+
+_aws: dict = {}
+
+
+def _dynamodb():
+    if "dynamodb" not in _aws:
+        session = boto3.Session(profile_name=os.environ.get("SHORTENER_AWS_PROFILE", "plane-mcp"),
+                                region_name=os.environ.get("SHORTENER_AWS_REGION", "eu-west-2"))
+        _aws["dynamodb"] = session.client("dynamodb")
+    return _aws["dynamodb"]
+
+
+def _sync_shortener_project(p: dict) -> dict:
+    """Upsert one project's row. UpdateItem rather than PutItem, so any other
+    attributes on the row survive."""
+    alias = p["identifier"].lower()
+    try:
+        _dynamodb().update_item(
+            TableName=SHORTENER_TABLE,
+            Key={"alias": {"S": alias}},
+            UpdateExpression="SET urlTemplate = :t, projectUrl = :p",
+            ExpressionAttributeValues={
+                ":t": {"S": _web(f"/browse/{p['identifier']}-{{ref}}/")},
+                ":p": {"S": _web(f"/projects/{p['id']}/issues/")},
+            },
+        )
+        return {"alias": alias, "synced": True}
+    except Exception as e:  # never fail a Plane operation over the shortener
+        return {"alias": alias, "synced": False, "error": f"{type(e).__name__}: {e}"}
 
 
 # ── Work items ────────────────────────────────────────────────────────────────

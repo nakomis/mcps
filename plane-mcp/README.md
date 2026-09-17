@@ -33,9 +33,10 @@ env = {PLANE_URL = "https://plane.home.nakomis.com", PLANE_WORKSPACE = "nakomis"
 
 | Tool | Does |
 |---|---|
-| `list_projects` | Identifiers, names, archived flag |
-| `get_project` | States (with group), labels, members |
-| `create_project` | New project; adds martin@ and plane@ as admins |
+| `list_projects` | Identifiers, names, archived flag; `refresh=True` bypasses the cache |
+| `get_project` | States (with group), labels, members; `refresh=True` bypasses the cache |
+| `create_project` | New project; adds martin@ and plane@ as admins, and registers it with the nakom.is shortener |
+| `sync_shortener_projects` | Register every project with the nakom.is shortener (backfill or recovery) |
 | `list_work_items` | Open items by default; filter by state, label, assignee (`me`) |
 | `search_work_items` | Text search across the workspace or one project |
 | `get_story` | One item by ref, with description, comments, parent and project context. Read-only |
@@ -45,6 +46,21 @@ env = {PLANE_URL = "https://plane.home.nakomis.com", PLANE_WORKSPACE = "nakomis"
 | `add_comment` | Markdown comment by ref |
 | `list_epics` | Items labelled `epic`, with sub-item counts |
 | `link_work_items` | Attach a URL (e.g. a PR) to an item |
+
+## Caching
+
+Projects, states, labels and members are cached for five minutes (`PLANE_CACHE_TTL`, seconds), not for the life of the process: Claude sessions run for days, and a project created from another session should appear. Pass `refresh=True` to `list_projects` or `get_project` to re-read at once. Looking up an unknown identifier always refreshes.
+
+## nakom.is shortener
+
+`nakom.is/plane/<identifier>` opens a project's work items and `nakom.is/plane/<identifier> <n>` one work item. The shortener's Lambda never calls Plane: it reads a row per project from the `ticket-projects` DynamoDB table (nakom.is repo), and this MCP writes that row. `create_project` registers each new project; `sync_shortener_projects` upserts every project. Both use `UpdateItem`, so they never remove hand-added aliases such as `nako` → NAKIS, and a failed write is reported rather than failing the Plane operation.
+
+AWS access is through IAM Roles Anywhere with a client certificate whose CN is `plane-mcp`, assuming the `plane-mcp-sync` role (nakom.is `LambdaStack`), which may only `UpdateItem` on that table. Setup:
+
+1. Request and approve a `roles-anywhere` certificate with CN `plane-mcp` in the cert-portal
+2. `home-servers/scripts/collect-cert.sh --role plane-mcp --url '<presigned-url>'` installs it, adds the `plane-mcp` AWS profile and proves it can assume the role
+
+Overrides: `SHORTENER_AWS_PROFILE` (default `plane-mcp`), `SHORTENER_AWS_REGION` (`eu-west-2`), `SHORTENER_TABLE` (`ticket-projects`).
 
 ## Plane CE notes
 
