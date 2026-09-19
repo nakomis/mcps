@@ -60,6 +60,14 @@ AWS access is through IAM Roles Anywhere with a client certificate whose CN is `
 1. Request and approve a `roles-anywhere` certificate with CN `plane-mcp` in the cert-portal
 2. `home-servers/scripts/collect-cert.sh --role plane-mcp --url '<presigned-url>'` installs it, adds the `plane-mcp` AWS profile and proves it can assume the role
 
+3. `cert-refresh/install.sh` loads a daily LaunchAgent that installs renewed certificates (below)
+
+### Certificate renewal
+
+The certificate lasts a year, and renews itself (HOME-389). Thirty days before it expires, the home cert portal issues a new one with no approval needed — `plane-mcp` is on its auto-renew allow-list — publishes it to SSM (`/plane-mcp/prod/client-cert` and `client-key`), and sends a push to Martin's phone. The LaunchAgent (`cert-refresh/refresh-cert.sh`, daily at 09:30 and at login) fetches it using the current certificate, checks the CN, that the key matches and that it lasts longer, proves it can assume the role, and only then swaps it into `~/.config/plane-mcp/`, keeping the previous pair in `previous/`. Log: `~/Library/Logs/plane-mcp-cert-refresh.log`.
+
+If the Mac is off for the whole month before expiry, the old certificate lapses and can't fetch its successor. That is deliberate: re-issue it by hand with `collect-cert.sh --role plane-mcp`.
+
 Overrides: `SHORTENER_AWS_PROFILE` (default `plane-mcp`), `SHORTENER_AWS_REGION` (`eu-west-2`), `SHORTENER_TABLE` (`ticket-projects`).
 
 ## Plane CE notes
