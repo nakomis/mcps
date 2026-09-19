@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    Installs the Plane MCP's renewed Roles Anywhere certificate once the home
+    cert portal has published it (HOME-389). Rendered and loaded by install.sh,
+    which fills in REPLACE_SCRIPT and REPLACE_LOG.
+
+    The portal renews 30 days before expiry, so a daily run has a month to
+    catch it. RunAtLoad covers a Mac that was off or asleep at the scheduled
+    time. It does its work and exits: not a daemon, so no KeepAlive.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nakomis.plane-mcp-cert-refresh</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>REPLACE_SCRIPT</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>REPLACE_LOG</string>
+    <key>StandardErrorPath</key>
+    <string>REPLACE_LOG</string>
+</dict>
+</plist>
