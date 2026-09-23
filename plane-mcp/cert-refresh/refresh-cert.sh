@@ -11,6 +11,11 @@
 # Safe to run as often as you like: it does nothing unless the published
 # certificate differs from the installed one, and it only swaps once the new
 # pair has proved it can assume the role.
+#
+# Each Mac has its own CN (plane-mcp on Phi, plane-mcp-mu on Mu — HOME-392),
+# and the portal publishes each under /<CN>/<env>/. The CN is read from the
+# installed certificate, which collect-cert.sh has already checked, so the
+# LaunchAgent needs no per-host setting; PLANE_MCP_CN overrides it.
 set -euo pipefail
 
 # launchd's PATH is minimal.
@@ -19,17 +24,25 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/us
 PROFILE="${PLANE_MCP_AWS_PROFILE:-plane-mcp}"
 REGION="eu-west-2"
 DEPLOY_ENV="${DEPLOY_ENV:-prod}"
-CN="plane-mcp"
 DEST="$HOME/.config/plane-mcp"
 CERT="$DEST/plane-mcp.crt.pem"
 KEY="$DEST/plane-mcp.key.pem"
-CERT_PARAM="/plane-mcp/${DEPLOY_ENV}/client-cert"
-KEY_PARAM="/plane-mcp/${DEPLOY_ENV}/client-key"
 
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
 die() { log "error: $*"; exit 1; }
 
-[ -f "$CERT" ] || die "no installed certificate at $CERT — run home-servers' collect-cert.sh --role plane-mcp first"
+cn_of() { openssl x509 -in "$1" -noout -subject | sed -n 's/.*CN *= *\([^,/]*\).*/\1/p' | sed 's/[[:space:]]*$//'; }
+
+[ -f "$CERT" ] || die "no installed certificate at $CERT — run home-servers' collect-cert.sh --role plane-mcp (or plane-mcp-<host>) first"
+
+CN="${PLANE_MCP_CN:-$(cn_of "$CERT")}"
+# Only Plane MCP identities: the CN becomes part of an SSM path below.
+case "$CN" in
+    plane-mcp|plane-mcp-[a-z0-9]*) ;;
+    *) die "installed certificate has CN '${CN}', which is not a Plane MCP identity" ;;
+esac
+CERT_PARAM="/${CN}/${DEPLOY_ENV}/client-cert"
+KEY_PARAM="/${CN}/${DEPLOY_ENV}/client-key"
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
@@ -46,10 +59,10 @@ if ! aws ssm get-parameter --profile "$PROFILE" --region "$REGION" --name "$CERT
     fi
     cat "$WORK/err" >&2
     if grep -q AccessDenied "$WORK/err"; then
-        die "the plane-mcp-sync role may not read ${CERT_PARAM} — is nakom.is's LambdaStack (HOME-389) deployed?"
+        die "the ${CN} role may not read ${CERT_PARAM} — is nakom.is's LambdaStack (HOME-389/HOME-392) deployed?"
     fi
     if ! openssl x509 -in "$CERT" -noout -checkend 0 >/dev/null; then
-        die "the installed certificate has expired, so it can't fetch its successor — re-issue it (collect-cert.sh --role plane-mcp)"
+        die "the installed certificate has expired, so it can't fetch its successor — re-issue it (collect-cert.sh --role ${CN})"
     fi
     die "could not read ${CERT_PARAM}"
 fi
@@ -64,7 +77,7 @@ aws ssm get-parameter --profile "$PROFILE" --region "$REGION" --name "$KEY_PARAM
     --query Parameter.Value --output text > "$WORK/key.pem" || die "could not read ${KEY_PARAM}"
 chmod 600 "$WORK/key.pem"
 
-NEW_CN=$(openssl x509 -in "$WORK/cert.pem" -noout -subject | sed -n 's/.*CN *= *\([^,/]*\).*/\1/p' | sed 's/[[:space:]]*$//')
+NEW_CN=$(cn_of "$WORK/cert.pem")
 [ "$NEW_CN" = "$CN" ] || die "published certificate has CN '${NEW_CN}', expected '${CN}' — not installing"
 openssl x509 -in "$WORK/cert.pem" -noout -checkend 0 >/dev/null || die "published certificate has already expired — not installing"
 
