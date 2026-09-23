@@ -55,18 +55,25 @@ Projects, states, labels and members are cached for five minutes (`PLANE_CACHE_T
 
 `nakom.is/plane/<identifier>` opens a project's work items and `nakom.is/plane/<identifier> <n>` one work item. The shortener's Lambda never calls Plane: it reads a row per project from the `ticket-projects` DynamoDB table (nakom.is repo), and this MCP writes that row. `create_project` registers each new project; `sync_shortener_projects` upserts every project. Both use `UpdateItem`, so they never remove hand-added aliases such as `nako` → NAKIS, and a failed write is reported rather than failing the Plane operation.
 
-AWS access is through IAM Roles Anywhere with a client certificate whose CN is `plane-mcp`, assuming the `plane-mcp-sync` role (nakom.is `LambdaStack`), which may only `UpdateItem` on that table. Setup:
+AWS access is through IAM Roles Anywhere with a client certificate, one identity per Mac (HOME-392), each assuming its own role in nakom.is `LambdaStack` that may only `UpdateItem` on that table:
 
-1. Request and approve a `roles-anywhere` certificate with CN `plane-mcp` in the cert-portal
-2. `home-servers/scripts/collect-cert.sh --role plane-mcp --url '<presigned-url>'` installs it, adds the `plane-mcp` AWS profile and proves it can assume the role
+| Mac | CN | Role |
+| --- | --- | --- |
+| Phi | `plane-mcp` | `plane-mcp-sync` |
+| Mu | `plane-mcp-mu` | `plane-mcp-sync-mu` |
+
+Locally both use the same paths — `~/.config/plane-mcp/plane-mcp.{crt,key}.pem` and the `plane-mcp` AWS profile — so nothing else here differs per Mac. Setup:
+
+1. Request and approve a `roles-anywhere` certificate with that Mac's CN in the cert-portal
+2. `home-servers/scripts/collect-cert.sh --role <CN> --url '<presigned-url>'` installs it, adds the `plane-mcp` AWS profile and proves it can assume the role
 
 3. `cert-refresh/install.sh` loads a daily LaunchAgent that installs renewed certificates (below)
 
 ### Certificate renewal
 
-The certificate lasts a year, and renews itself (HOME-389). Thirty days before it expires, the home cert portal issues a new one with no approval needed — `plane-mcp` is on its auto-renew allow-list — publishes it to SSM (`/plane-mcp/prod/client-cert` and `client-key`), and sends a push to Martin's phone. The LaunchAgent (`cert-refresh/refresh-cert.sh`, daily at 09:30 and at login) fetches it using the current certificate, checks the CN, that the key matches and that it lasts longer, proves it can assume the role, and only then swaps it into `~/.config/plane-mcp/`, keeping the previous pair in `previous/`. Log: `~/Library/Logs/plane-mcp-cert-refresh.log`.
+The certificate lasts a year, and renews itself (HOME-389). Thirty days before it expires, the home cert portal issues a new one with no approval needed — both CNs are on its auto-renew allow-list — publishes it to SSM (`/<CN>/prod/client-cert` and `client-key`), and sends a push to Martin's phone. The LaunchAgent (`cert-refresh/refresh-cert.sh`, daily at 09:30 and at login) fetches it using the current certificate (whose CN it reads to know which parameters are its own), checks the CN, that the key matches and that it lasts longer, proves it can assume the role, and only then swaps it into `~/.config/plane-mcp/`, keeping the previous pair in `previous/`. Log: `~/Library/Logs/plane-mcp-cert-refresh.log`.
 
-If the Mac is off for the whole month before expiry, the old certificate lapses and can't fetch its successor. That is deliberate: re-issue it by hand with `collect-cert.sh --role plane-mcp`.
+If the Mac is off for the whole month before expiry, the old certificate lapses and can't fetch its successor. That is deliberate: re-issue it by hand with `collect-cert.sh --role <CN>`.
 
 Overrides: `SHORTENER_AWS_PROFILE` (default `plane-mcp`), `SHORTENER_AWS_REGION` (`eu-west-2`), `SHORTENER_TABLE` (`ticket-projects`).
 
