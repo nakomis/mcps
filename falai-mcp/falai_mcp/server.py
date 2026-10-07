@@ -603,14 +603,20 @@ def _to_stl(glb_path: Path, width_mm: float):
     # Size and seat the model by its largest piece. Loose fragments (Trellis
     # left ~330) can sit outside it, and measuring them would scale the wrong
     # thing and leave the main body floating above the bed.
-    bodies = mesh.split(only_watertight=False)
-    main = max(bodies, key=lambda b: len(b.faces)) if len(bodies) > 1 else mesh
-    scale = width_mm / main.extents[0]
+    # Connected components over face adjacency, not mesh.split(): split
+    # probes each piece for holes, which needs networkx and is slow.
+    pieces = trimesh.graph.connected_components(
+        mesh.face_adjacency, nodes=np.arange(len(mesh.faces)), min_len=1
+    )
+    largest = max(pieces, key=len)
+    main = mesh.vertices[np.unique(mesh.faces[largest])]
+    low, high = main.min(axis=0), main.max(axis=0)
+    scale = width_mm / (high[0] - low[0])
+    mesh.apply_translation(-low)
     mesh.apply_scale(scale)
-    mesh.apply_translation(-main.bounds[0] * scale)
     stl_path = glb_path.with_suffix(".stl")
     mesh.export(stl_path)
-    return stl_path, mesh, len(bodies)
+    return stl_path, mesh, len(pieces)
 
 
 class Model3DResult(BaseModel):
