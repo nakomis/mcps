@@ -1,7 +1,7 @@
 # falai-mcp
 
 Hosted image generation and editing via [fal.ai](https://fal.ai), defaulting
-to Seedream 5.0 Pro. Replaces `draw-things-mcp`, which needed the Draw Things
+to Seedream 5.0 Pro, plus image-to-3D for printing. Replaces `draw-things-mcp`, which needed the Draw Things
 app running locally and stopped working when it was uninstalled.
 
 ## Tools
@@ -11,6 +11,7 @@ app running locally and stopped working when it was uninstalled.
 | `generate_image` | `bytedance/seedream/v5/pro/text-to-image` | Text prompt → new image, any size |
 | `edit_image` | `bytedance/seedream/v5/pro/edit` | Instruction-driven edits, up to 4 reference images |
 | `remove_object` | `fal-ai/object-removal` | Deleting something from a photo |
+| `generate_3d` | `fal-ai/hunyuan-3d/v3.1/pro/image-to-3d` | Image → GLB + print-ready STL |
 
 ## Choosing a model
 
@@ -43,6 +44,37 @@ be reproduced, rather than silently dropping it.
 instead of `image_size`, so adding it without translating those would silently
 ignore every size argument.
 
+## 3D models for printing
+
+`generate_3d` takes an image and returns the GLB as fal sent it, plus an STL
+ready to slice: Z-up, scaled to `width_mm` (default 80), sitting on z=0. The
+result reports `watertight`, `bodies` and `size_mm`, and warns when the mesh
+needs repair. A run takes one to five minutes, so it uses fal's queue rather
+than the synchronous endpoint.
+
+**The input matters more than the model.** Give it one object, centred, on
+plain white. A logo on a coloured tile gets the tile modelled as a slab, so
+run `edit_image` first to put the object on white.
+
+Compared on 2026-10-07 using the NakTV icon (a cream retro TV), at the
+settings `generate_3d` uses. Prices are fal's list prices on that date, in
+sterling at 77p to the dollar:
+
+| `model` | Endpoint | Cost | Time | Result |
+|---|---|---|---|---|
+| `hunyuan` (default) | Hunyuan3D v3.1 Pro, geometry only | $0.225 / **17p** | 110s | One watertight body; finest detail; the only one to give the TV a believable CRT back |
+| `trellis` | TRELLIS.2, 1024p | $0.30 / 23p | 62s | Faithful, well proportioned; not watertight, ~330 loose fragments |
+| `tripo` | Tripo H3.1, untextured, detailed geometry | $0.40 / 31p | 181s | Good detail, shallowest; came back side-on until `orientation=align_image` |
+| `pixal3d` | Pixal3D, 1024p | $0.30 / 23p | 265s | Far too deep for a TV, antennae lost, screen detail mostly gone |
+
+Hunyuan costs $0.15 more for each of PBR materials, multi-view input or a
+custom face count; `generate_3d` uses none of them. `geometry_only=False`
+textures Hunyuan at no extra cost, and Tripo for +$0.10. TRELLIS.2 and
+Pixal3D always texture. TripoSR, the name most guides still give, has been
+withdrawn from fal.
+
+As with the image models, re-measure before trusting the default.
+
 ## Low-balance warning
 
 Every result carries a `warnings` list. When the fal.ai balance falls below
@@ -72,9 +104,10 @@ security add-generic-password -s "fal.ai" -a "api-key" -w <YOUR_KEY>
 
 `FAL_KEY` overrides it if set.
 
-Editing needs the staging bucket from [`../infra`](../infra/) deployed, and AWS
-credentials that can read/write it (`AWS_PROFILE=nakom.is-sandbox`).
-`generate_image` needs neither — it has no input image.
+Editing and `generate_3d` need the staging bucket from [`../infra`](../infra/)
+deployed, and AWS credentials that can read/write it
+(`AWS_PROFILE=nakom.is-sandbox`). `generate_image` needs neither — it has no
+input image.
 
 ## How input images reach fal
 
@@ -142,7 +175,8 @@ state, not the action.
 
 ## Structured output
 
-Every tool returns an `ImageResult`, not a string, so MCP emits a real
+Every image tool returns an `ImageResult` (and `generate_3d` a
+`Model3DResult`), not a string, so MCP emits a real
 `outputSchema` and callers can inspect fields rather than parse prose:
 
 ```json
