@@ -1,13 +1,15 @@
 [project]
 name = "falai-mcp"
 version = "0.1.0"
-description = "MCP server for hosted image generation and editing via fal.ai (FLUX.2 pro)"
+description = "MCP server for hosted image generation and editing via fal.ai (Seedream, GPT Image, FLUX; Hunyuan3D and friends for 3D)"
 requires-python = ">=3.11"
 dependencies = [
     "mcp[cli]>=1.0.0,<2",
     "httpx>=0.27.0",
     "pillow>=11.0.0",
     "boto3>=1.35.0",
+    "trimesh>=4.0.0",
+    "scipy>=1.11.0",
 ]
 
 [project.scripts]

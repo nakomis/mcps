@@ -28,6 +28,7 @@ import mimetypes
 import os
 import re
 import subprocess
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
@@ -35,6 +36,8 @@ from pathlib import Path
 
 import boto3
 import httpx
+import numpy as np
+import trimesh
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import (
     ClientError,
@@ -92,8 +95,43 @@ REMOVE_MODELS = {
     "object-removal": "https://fal.run/fal-ai/object-removal",
 }
 
+# Image → 3D mesh, for printing. Like the image default above, this one is
+# dated and perishable. Measured 2026-10-07 on the NakTV icon (a cream retro
+# TV on white, 1024px), each model at the settings in _payload_3d. Prices are
+# fal's per-generation list prices at those settings, on the same date:
+#
+#     hunyuan  $0.225  110s  one watertight body, 500k faces; the finest detail
+#                            (all three dots, grille slats), and the only one to
+#                            give the TV a proper CRT back the image never showed
+#     trellis  $0.30    62s  faithful and well proportioned, not watertight: one
+#                            main body plus ~330 loose fragments
+#     tripo    $0.40   181s  good detail, shallowest depth; came back facing +X
+#                            until orientation=align_image was set
+#     pixal3d  $0.30   265s  1.5x deeper than wide, antennae lost, screen detail
+#                            mostly gone
+#
+# Hunyuan is the default because it was the only one a slicer would take
+# without repair, and it is also the cheapest. Its price rises by $0.15 each
+# for PBR, multi-view input, or a custom face count — so _payload_3d sets none
+# of them. Tripo's $0.40 is $0.20 untextured plus $0.20 for detailed geometry.
+#
+# TripoSR, the name most guides still give, has been withdrawn from fal — its
+# endpoint 404s.
+MODELS_3D = {
+    "hunyuan": "fal-ai/hunyuan-3d/v3.1/pro/image-to-3d",
+    "trellis": "fal-ai/trellis-2",
+    "tripo": "tripo3d/h3.1/image-to-3d",
+    "pixal3d": "fal-ai/pixal3d",
+}
+
 DEFAULT_MODEL = "seedream"
 DEFAULT_REMOVE_MODEL = "object-removal"
+DEFAULT_3D_MODEL = "hunyuan"
+
+# Per-model "keep the input's dimensions" token for edit_image. Seedream v5
+# edit rejects plain "auto" with a 422 and wants auto_1K/auto_2K instead,
+# which keep the input's aspect ratio at a fixed pixel budget.
+AUTO_SIZE = {"seedream": "auto_2K"}
 
 # Which models accept a seed at all. Seedream v5 pro and gpt-image-2 have no
 # seed field, so a caller asking for one gets told rather than quietly ignored
@@ -452,6 +490,97 @@ def _fetch_result(
     )
 
 
+# ── 3D helpers ────────────────────────────────────────────────────────────────
+
+# Generation takes one to five minutes — Pixal3D took 265s — which is too close
+# to fal.run's synchronous limit, so 3D calls go through the queue instead.
+QUEUE_POLL_SECONDS = 5
+QUEUE_TIMEOUT_SECONDS = 15 * 60
+
+
+def _payload_3d(name: str, image_url: str, geometry_only: bool) -> dict:
+    """Each endpoint names its fields differently; this is the translation."""
+    if name == "hunyuan":
+        return {
+            "input_image_url": image_url,
+            # Geometry is the untextured "white model" — all a printer needs.
+            "generate_type": "Geometry" if geometry_only else "Normal",
+        }
+    if name == "tripo":
+        return {
+            "image_url": image_url,
+            "geometry_quality": "detailed",
+            "texture": not geometry_only,
+            "pbr": not geometry_only,
+            # Unset, it returned 2M faces (a 100 MB STL). 500k matches Hunyuan.
+            "face_limit": 500_000,
+            # Without this it came back side-on, facing +X.
+            "orientation": "align_image",
+        }
+    # trellis and pixal3d always texture; there is no geometry-only switch.
+    return {"image_url": image_url}
+
+
+def _queue_call(endpoint: str, payload: dict) -> dict:
+    """Submit to fal's queue, poll until done, return the result."""
+    headers = {"Authorization": f"Key {_api_key()}"}
+    with httpx.Client(timeout=_TIMEOUT) as client:
+        r = client.post(f"https://queue.fal.run/{endpoint}", json=payload, headers=headers)
+        if r.status_code == 401:
+            raise RuntimeError("fal.ai rejected the API key (401). Check the keychain entry.")
+        if r.status_code >= 400:
+            raise RuntimeError(f"fal.ai returned {r.status_code}: {r.text[:500]}")
+        job = r.json()
+
+        deadline = time.monotonic() + QUEUE_TIMEOUT_SECONDS
+        while client.get(job["status_url"], headers=headers).json().get("status") != "COMPLETED":
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    f"fal.ai job {job.get('request_id')} still running after "
+                    f"{QUEUE_TIMEOUT_SECONDS // 60} minutes; gave up waiting."
+                )
+            time.sleep(QUEUE_POLL_SECONDS)
+
+        # A failed job still reaches COMPLETED; the error is in the result.
+        r = client.get(job["response_url"], headers=headers)
+        if r.status_code >= 400:
+            raise RuntimeError(f"fal.ai job failed ({r.status_code}): {r.text[:500]}")
+        return r.json()
+
+
+def _to_stl(glb_path: Path, width_mm: float) -> tuple[Path, "trimesh.Trimesh"]:
+    """Write a print-ready STL beside the GLB: Z-up, width_mm wide, on z=0."""
+    mesh = trimesh.load(glb_path, force="mesh")
+    # Textured meshes split vertices along every UV seam, so the raw mesh looks
+    # like thousands of loose bodies. Weld on position alone.
+    mesh = trimesh.Trimesh(mesh.vertices, mesh.faces, process=False)
+    mesh.merge_vertices(merge_tex=True, merge_norm=True)
+    # glTF is Y-up; slicers are Z-up.
+    mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))
+    mesh.apply_scale(width_mm / mesh.extents[0])
+    mesh.apply_translation(-mesh.bounds[0])
+    stl_path = glb_path.with_suffix(".stl")
+    mesh.export(stl_path)
+    return stl_path, mesh
+
+
+class Model3DResult(BaseModel):
+    """What generate_3d hands back."""
+
+    glb_path: str = Field(description="The model as fal returned it (GLB, Y-up)")
+    stl_path: str = Field(description="Print-ready STL: Z-up, scaled, sitting on z=0")
+    preview_path: str | None = Field(
+        default=None, description="A render of the model, when the endpoint supplies one"
+    )
+    model: str = Field(description="Which generator made it")
+    seconds: int = Field(description="Wall-clock time, including the queue")
+    size_mm: list[float] = Field(description="STL extents: width, depth, height in mm")
+    faces: int = Field(description="Triangle count")
+    watertight: bool = Field(description="True when the mesh is closed and slicer-ready")
+    bodies: int = Field(description="Separate pieces. 1 is ideal; more means loose fragments")
+    warnings: list[str] = Field(default_factory=list)
+
+
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -577,7 +706,10 @@ def edit_image(
             "prompt": prompt,
             "image_urls": urls,
             # "auto" preserves the input's dimensions unless asked otherwise.
-            "image_size": _size_param(width, height, aspect, "auto"),
+            "image_size": _size_param(
+                width, height, aspect,
+                AUTO_SIZE.get((model or DEFAULT_MODEL).strip().lower(), "auto"),
+            ),
             "output_format": output_format,
         }
         notes = _apply_seed(payload, model, seed)
@@ -661,6 +793,106 @@ def remove_object(
         })
 
     return _fetch_result(result, f"removed_{object_description}", target, output_format)
+
+
+@mcp.tool()
+def generate_3d(
+    image_path: str,
+    model: str = DEFAULT_3D_MODEL,
+    width_mm: float = 80.0,
+    geometry_only: bool = True,
+    max_dimension: int = 1024,
+    save_dir: str = "",
+) -> Model3DResult:
+    """
+    Turn an image into a 3D model for printing, using Hunyuan3D v3.1 Pro on
+    fal.ai. Takes one to five minutes.
+
+    Saves the GLB as fal returns it, plus an STL that is ready to slice:
+    Z-up, scaled to width_mm wide, sitting on the bed. Returns both paths and
+    a printability report (watertight, bodies, size).
+
+    Get the input right first; it matters more than the model. Use a single
+    object, centred, on a plain white background. A logo on a coloured tile
+    gets the tile modelled as a slab — run edit_image first to put the object
+    on white. The models invent whatever the image cannot show, such as the
+    back and the depth.
+
+    Args:
+        image_path:    Absolute path to the input image.
+        model:         "hunyuan" (default), "trellis", "tripo", or "pixal3d".
+
+                       Measured 2026-10-07 on a retro-TV logo: hunyuan was the
+                       only one to return a single watertight body, had the
+                       finest detail, and gave the TV a believable back. trellis was faithful but left ~330 loose
+                       fragments; tripo was good but shallow; pixal3d got the
+                       proportions badly wrong (far too deep). See MODELS_3D. Like every
+                       default here, re-check it rather than trusting it.
+        width_mm:      Width of the STL in millimetres (default 80). The models
+                       have no real-world scale, so this sets it.
+        geometry_only: Skip textures (default True) — a printer can't use them,
+                       and it is faster. Only hunyuan and tripo honour this;
+                       trellis and pixal3d always texture.
+        max_dimension: Downscale the input to this longest edge before upload
+                       (default 1024). 0 uploads at full resolution.
+        save_dir:      Directory to save into (default: alongside the input).
+    """
+    if width_mm <= 0:
+        raise ValueError(f"width_mm must be positive (got {width_mm}).")
+    name = (model or DEFAULT_3D_MODEL).strip().lower()
+    endpoint = _endpoint(MODELS_3D, name, DEFAULT_3D_MODEL)
+
+    started = time.monotonic()
+    with _staged_urls([image_path], max_dimension) as urls:
+        result = _queue_call(endpoint, _payload_3d(name, urls[0], geometry_only))
+    seconds = int(time.monotonic() - started)
+
+    mesh_file = result.get("model_glb") or result.get("model_mesh")
+    if not mesh_file:
+        raise RuntimeError(f"fal.ai returned no model: {str(result)[:300]}")
+
+    target = save_dir or str(Path(image_path).expanduser().parent)
+    label = f"{Path(image_path).stem}_{name}"
+    warnings: list[str] = []
+    with httpx.Client(timeout=_TIMEOUT, follow_redirects=True) as client:
+        glb_path = _save(client.get(mesh_file["url"]).content, label, target, "glb")
+        preview = result.get("thumbnail") or result.get("rendered_image")
+        preview_path = None
+        if preview:
+            preview_path = str(_save(client.get(preview["url"]).content, label, target, "png"))
+
+    if not (mesh_file.get("file_name") or "x.glb").lower().endswith(".glb"):
+        warnings.append(
+            f"{name} returned {mesh_file.get('file_name')!r}, not a GLB; the STL "
+            "conversion may be wrong."
+        )
+
+    stl_path, mesh = _to_stl(glb_path, width_mm)
+    bodies = mesh.body_count
+    if not mesh.is_watertight:
+        warnings.append(
+            "The mesh is not watertight. PrusaSlicer will try to repair it on "
+            "import; check the sliced preview for holes before printing."
+        )
+    if bodies > 1:
+        warnings.append(
+            f"The mesh is {bodies} separate pieces. Small ones are usually loose "
+            "fragments that print as debris; delete them in the slicer."
+        )
+    warnings += _balance_warning()
+
+    return Model3DResult(
+        glb_path=str(glb_path),
+        stl_path=str(stl_path),
+        preview_path=preview_path,
+        model=name,
+        seconds=seconds,
+        size_mm=[round(float(x), 1) for x in mesh.extents],
+        faces=len(mesh.faces),
+        watertight=bool(mesh.is_watertight),
+        bodies=int(bodies),
+        warnings=warnings,
+    )
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
