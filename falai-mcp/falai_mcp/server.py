@@ -36,8 +36,6 @@ from pathlib import Path
 
 import boto3
 import httpx
-import numpy as np
-import trimesh
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import (
     ClientError,
@@ -275,7 +273,9 @@ def _aws_credentials():
 
 
 @contextmanager
-def _staged_urls(image_paths: list[str], max_dimension: int = 0):
+def _staged_urls(
+    image_paths: list[str], max_dimension: int = 0, ttl: int = URL_TTL_SECONDS
+):
     """Upload images, yield presigned GET URLs, then delete them again.
 
     The delete runs in a finally block so a failed fal call still cleans up.
@@ -307,7 +307,7 @@ def _staged_urls(image_paths: list[str], max_dimension: int = 0):
                     s3.generate_presigned_url(
                         "get_object",
                         Params={"Bucket": BUCKET, "Key": key},
-                        ExpiresIn=URL_TTL_SECONDS,
+                        ExpiresIn=ttl,
                     )
                 )
         yield urls
@@ -522,7 +522,13 @@ def _payload_3d(name: str, image_url: str, geometry_only: bool) -> dict:
 
 
 def _queue_call(endpoint: str, payload: dict) -> dict:
-    """Submit to fal's queue, poll until done, return the result."""
+    """Submit to fal's queue, poll until done, return the result.
+
+    A job is paid for once submitted, so a flaky poll must not throw it away:
+    transient status errors are retried until the deadline, and every error
+    raised after submission carries the request id so the result can still be
+    collected by hand.
+    """
     headers = {"Authorization": f"Key {_api_key()}"}
     with httpx.Client(timeout=_TIMEOUT) as client:
         r = client.post(f"https://queue.fal.run/{endpoint}", json=payload, headers=headers)
@@ -531,25 +537,62 @@ def _queue_call(endpoint: str, payload: dict) -> dict:
         if r.status_code >= 400:
             raise RuntimeError(f"fal.ai returned {r.status_code}: {r.text[:500]}")
         job = r.json()
+        try:
+            request_id = job["request_id"]
+            status_url, response_url = job["status_url"], job["response_url"]
+        except KeyError:
+            raise RuntimeError(f"Unexpected fal.ai queue response: {str(job)[:300]}") from None
 
         deadline = time.monotonic() + QUEUE_TIMEOUT_SECONDS
-        while client.get(job["status_url"], headers=headers).json().get("status") != "COMPLETED":
+        failures = 0
+        while True:
+            try:
+                r = client.get(status_url, headers=headers)
+                r.raise_for_status()  # fal answers 202 while waiting, 200 when done
+                status = r.json().get("status")
+                failures = 0
+            except (httpx.HTTPError, ValueError) as e:
+                failures += 1
+                if failures >= 6:
+                    raise RuntimeError(
+                        f"Lost contact with fal.ai job {request_id} ({e}). It may still "
+                        f"finish; its result will be at {response_url}"
+                    ) from e
+                status = None
+            # Anything other than the two waiting states is final: COMPLETED,
+            # or an error state whose detail is in the result.
+            if status not in (None, "IN_QUEUE", "IN_PROGRESS"):
+                break
             if time.monotonic() > deadline:
+                try:
+                    client.put(status_url.removesuffix("/status") + "/cancel", headers=headers)
+                except httpx.HTTPError:
+                    pass  # the timeout below is the error worth reporting
                 raise RuntimeError(
-                    f"fal.ai job {job.get('request_id')} still running after "
-                    f"{QUEUE_TIMEOUT_SECONDS // 60} minutes; gave up waiting."
+                    f"fal.ai job {request_id} still running after "
+                    f"{QUEUE_TIMEOUT_SECONDS // 60} minutes; asked fal to cancel it."
                 )
             time.sleep(QUEUE_POLL_SECONDS)
 
-        # A failed job still reaches COMPLETED; the error is in the result.
-        r = client.get(job["response_url"], headers=headers)
+        r = client.get(response_url, headers=headers)
         if r.status_code >= 400:
-            raise RuntimeError(f"fal.ai job failed ({r.status_code}): {r.text[:500]}")
+            raise RuntimeError(
+                f"fal.ai job {request_id} failed ({status}, {r.status_code}): {r.text[:500]}"
+            )
         return r.json()
 
 
-def _to_stl(glb_path: Path, width_mm: float) -> tuple[Path, "trimesh.Trimesh"]:
-    """Write a print-ready STL beside the GLB: Z-up, width_mm wide, on z=0."""
+def _to_stl(glb_path: Path, width_mm: float):
+    """Write a print-ready STL beside the GLB: Z-up, width_mm wide, on z=0.
+
+    Width is the model's own X extent, i.e. side to side as seen in the input
+    image — every generator here faces the camera along +Z.
+    """
+    # Imported here so that a broken numpy/scipy wheel can only break this
+    # tool, not image generation.
+    import numpy as np
+    import trimesh
+
     mesh = trimesh.load(glb_path, force="mesh")
     # Textured meshes split vertices along every UV seam, so the raw mesh looks
     # like thousands of loose bodies. Weld on position alone.
@@ -557,11 +600,17 @@ def _to_stl(glb_path: Path, width_mm: float) -> tuple[Path, "trimesh.Trimesh"]:
     mesh.merge_vertices(merge_tex=True, merge_norm=True)
     # glTF is Y-up; slicers are Z-up.
     mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))
-    mesh.apply_scale(width_mm / mesh.extents[0])
-    mesh.apply_translation(-mesh.bounds[0])
+    # Size and seat the model by its largest piece. Loose fragments (Trellis
+    # left ~330) can sit outside it, and measuring them would scale the wrong
+    # thing and leave the main body floating above the bed.
+    bodies = mesh.split(only_watertight=False)
+    main = max(bodies, key=lambda b: len(b.faces)) if len(bodies) > 1 else mesh
+    scale = width_mm / main.extents[0]
+    mesh.apply_scale(scale)
+    mesh.apply_translation(-main.bounds[0] * scale)
     stl_path = glb_path.with_suffix(".stl")
     mesh.export(stl_path)
-    return stl_path, mesh
+    return stl_path, mesh, len(bodies)
 
 
 class Model3DResult(BaseModel):
@@ -805,8 +854,8 @@ def generate_3d(
     save_dir: str = "",
 ) -> Model3DResult:
     """
-    Turn an image into a 3D model for printing, using Hunyuan3D v3.1 Pro on
-    fal.ai. Takes one to five minutes.
+    Turn an image into a 3D model for printing, on fal.ai. Defaults to
+    Hunyuan3D v3.1 Pro. Takes one to five minutes.
 
     Saves the GLB as fal returns it, plus an STL that is ready to slice:
     Z-up, scaled to width_mm wide, sitting on the bed. Returns both paths and
@@ -843,7 +892,9 @@ def generate_3d(
     endpoint = _endpoint(MODELS_3D, name, DEFAULT_3D_MODEL)
 
     started = time.monotonic()
-    with _staged_urls([image_path], max_dimension) as urls:
+    # The URL must outlive the queue: fal fetches the image only when the job
+    # starts, which on a busy queue can be minutes after submission.
+    with _staged_urls([image_path], max_dimension, ttl=QUEUE_TIMEOUT_SECONDS + 300) as urls:
         result = _queue_call(endpoint, _payload_3d(name, urls[0], geometry_only))
     seconds = int(time.monotonic() - started)
 
@@ -852,14 +903,26 @@ def generate_3d(
         raise RuntimeError(f"fal.ai returned no model: {str(result)[:300]}")
 
     target = save_dir or str(Path(image_path).expanduser().parent)
-    label = f"{Path(image_path).stem}_{name}"
+    # Model first, so the slug's 40-character cut never drops it.
+    label = f"{name}_{Path(image_path).stem}"
     warnings: list[str] = []
     with httpx.Client(timeout=_TIMEOUT, follow_redirects=True) as client:
-        glb_path = _save(client.get(mesh_file["url"]).content, label, target, "glb")
+        r = client.get(mesh_file["url"])
+        if r.status_code >= 400:
+            raise RuntimeError(
+                f"Could not download the model ({r.status_code}). It was paid for and "
+                f"is at {mesh_file['url']} for a while yet."
+            )
+        glb_path = _save(r.content, label, target, "glb")
         preview = result.get("thumbnail") or result.get("rendered_image")
         preview_path = None
         if preview:
-            preview_path = str(_save(client.get(preview["url"]).content, label, target, "png"))
+            try:
+                r = client.get(preview["url"])
+                r.raise_for_status()
+                preview_path = str(_save(r.content, label, target, "png"))
+            except httpx.HTTPError as e:
+                warnings.append(f"The preview image could not be downloaded ({e}).")
 
     if not (mesh_file.get("file_name") or "x.glb").lower().endswith(".glb"):
         warnings.append(
@@ -867,8 +930,7 @@ def generate_3d(
             "conversion may be wrong."
         )
 
-    stl_path, mesh = _to_stl(glb_path, width_mm)
-    bodies = mesh.body_count
+    stl_path, mesh, bodies = _to_stl(glb_path, width_mm)
     if not mesh.is_watertight:
         warnings.append(
             "The mesh is not watertight. PrusaSlicer will try to repair it on "
@@ -877,7 +939,8 @@ def generate_3d(
     if bodies > 1:
         warnings.append(
             f"The mesh is {bodies} separate pieces. Small ones are usually loose "
-            "fragments that print as debris; delete them in the slicer."
+            "fragments that print as debris; delete them in the slicer. size_mm "
+            "spans every piece; the largest was used for scale and bed placement."
         )
     warnings += _balance_warning()
 
