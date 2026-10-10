@@ -37,15 +37,21 @@ env = {PLANE_URL = "https://plane.home.nakomis.com", PLANE_WORKSPACE = "nakomis"
 | `get_project` | States (with group), labels, members; `refresh=True` bypasses the cache |
 | `create_project` | New project; adds martin@ and plane@ as admins, and registers it with the nakom.is shortener |
 | `sync_shortener_projects` | Register every project with the nakom.is shortener (backfill or recovery) |
-| `list_work_items` | Open items by default; filter by state, label, assignee (`me`) |
+| `list_work_items` | Open items by default; filter by state, label, assignee (`me`), module |
 | `search_work_items` | Text search across the workspace or one project |
-| `get_story` | One item by ref, with description, comments, parent and project context. Read-only |
+| `get_story` | One item by ref, with description, comments, parent, modules and project context. Read-only |
 | `pick_up_story` | Move to "In progress", assign to Claude, return the item |
 | `create_work_item` | Name, markdown description, state, labels, assignees, priority, parent ref, `epic` |
 | `update_work_item` | Any of the above by ref; `add_labels` / `remove_labels` |
 | `add_comment` | Markdown comment by ref |
 | `list_epics` | Items labelled `epic`, with sub-item counts |
 | `link_work_items` | Attach a URL (e.g. a PR) to an item |
+| `list_modules` | A project's modules: status, lead, dates, total/completed counts; `include_archived` |
+| `get_module` | One module by name (case-insensitive) or id, with its work items |
+| `create_module` | Name, description, status (`backlog`/`planned`/`in-progress`/`paused`/`completed`/`cancelled`), lead, start/target dates |
+| `update_module` | Any of the above by name or id; only provided fields change |
+| `add_to_module` | Add work items by ref (e.g. `["HOME-414", "HOME-416"]`); all refs must share a project |
+| `remove_from_module` | Remove work items by ref from a module (the items themselves are untouched) |
 
 ## Caching
 
@@ -83,4 +89,6 @@ Overrides: `SHORTENER_AWS_PROFILE` (default `plane-mcp`), `SHORTENER_AWS_REGION`
 - Project names can't contain `- . & + , : ; $ ^ { } * = ? @ # | ' < > ( ) % !`.
 - New projects open as a list for everyone; the board default for Martin on
   migrated projects was set by `home-infra/taiga/migration/fixups.py`.
+- Modules group work items outside the parent/sub-item tree. Plane's work item payload doesn't list its modules, so `get_story` finds them by scanning each non-empty module's items (one request per module). No tool deletes a module.
+- Archived modules are listed by a separate endpoint (`/archived-modules/`), which `include_archived` merges in.
 - No public API for Pages or for archiving work items.

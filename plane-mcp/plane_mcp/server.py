@@ -242,6 +242,7 @@ def _story(p: dict, item: dict) -> dict:
     story = _format_item(p, item)
     story["description"] = _text(item.get("description_html"))
     story["comments"] = _comments(p, item["id"])
+    story["modules"] = _item_module_names(p, item["id"])
     if item.get("parent"):
         parent = _get(f"/projects/{p['id']}/work-items/{item['parent']}/")
         story["parent"] = f"{p['identifier']}-{parent['sequence_id']} {parent['name']}"
@@ -378,13 +379,14 @@ def _sync_shortener_project(p: dict) -> dict:
 
 @mcp.tool()
 def list_work_items(project: str, state: str = None, label: str = None, assignee: str = None,
-                    include_closed: bool = False, summary: bool = True, limit: int = 200) -> dict:
+                    include_closed: bool = False, summary: bool = True, limit: int = 200,
+                    module: str = None) -> dict:
     """
     List work items in a project (e.g. project="HOME").
 
     Defaults to open items (state group not completed/cancelled), summary shape
     {ref, name, state, state_group}. Filter by state name, label name, or
-    assignee (email, display name, or "me"). Pass summary=False for labels,
+    assignee (email, display name, or "me"), or module (name or id). Pass summary=False for labels,
     assignees, dates and URL. Epics are items labelled "epic". Archived items
     aren't listed; get_story still fetches one by ref.
     """
@@ -403,6 +405,9 @@ def list_work_items(project: str, state: str = None, label: str = None, assignee
     if assignee:
         uid = _user_id(p, assignee)
         items = [i for i in items if uid in i.get("assignees", [])]
+    if module:
+        in_module = {i["id"] for i in _module_items(p, _module(p, module))}
+        items = [i for i in items if i["id"] in in_module]
     items.sort(key=lambda i: i["sequence_id"])
     return {"project": p["identifier"], "total_count": len(items), "returned_count": min(len(items), limit),
             "items": [_format_item(p, i, full=not summary) for i in items[:limit]]}
@@ -562,6 +567,175 @@ def link_work_items(ref: str, url: str, title: str = None) -> dict:
         body["title"] = title
     link = _request("POST", f"/projects/{p['id']}/work-items/{item['id']}/links/", json=body)
     return {"ref": f"{p['identifier']}-{item['sequence_id']}", "link_id": link["id"], "url": url}
+
+
+# ── Modules ───────────────────────────────────────────────────────────────────
+#
+# Plane modules group work items (a feature, a theme) outside the parent/sub-item
+# tree. Not cached: their counts change with every state change.
+
+MODULE_STATUSES = ("backlog", "planned", "in-progress", "paused", "completed", "cancelled")
+
+
+def _modules(p: dict, include_archived: bool = False) -> list[dict]:
+    rows = _get_all(f"/projects/{p['id']}/modules/")
+    if include_archived:
+        rows += _get_all(f"/projects/{p['id']}/archived-modules/")
+    return rows
+
+
+def _module(p: dict, ident: str) -> dict:
+    """Find a module by id or by name (case-insensitive), archived ones included."""
+    modules = _modules(p, include_archived=True)
+    wanted = (ident or "").strip()
+    by_id = next((m for m in modules if m["id"] == wanted), None)
+    if by_id:
+        return by_id
+    matches = [m for m in modules if m["name"].lower() == wanted.lower()]
+    if len(matches) > 1:
+        raise ValueError(f"{len(matches)} modules in {p['identifier']} are named '{ident}'; use the id: {[m['id'] for m in matches]}")
+    if not matches:
+        raise ValueError(f"No module '{ident}' in {p['identifier']}. Modules: {sorted(m['name'] for m in modules)}")
+    return matches[0]
+
+
+def _module_items(p: dict, m: dict) -> list[dict]:
+    return _get_all(f"/projects/{p['id']}/modules/{m['id']}/module-issues/")
+
+
+def _item_module_names(p: dict, item_id: str) -> list[str]:
+    """Names of the modules containing an item. Plane's work item payload doesn't
+    say, so scan the (few) non-empty modules."""
+    return sorted(m["name"] for m in _modules(p, include_archived=True)
+                  if m.get("total_issues") != 0 and any(i["id"] == item_id for i in _module_items(p, m)))
+
+
+def _format_module(p: dict, m: dict) -> dict:
+    members = {x["id"]: x.get("display_name") or x.get("email") for x in _project_meta(p)["members"]}
+    return {
+        "id": m["id"],
+        "name": m["name"],
+        "status": m.get("status"),
+        "lead": members.get(m.get("lead"), m.get("lead")),
+        "start_date": m.get("start_date"),
+        "target_date": m.get("target_date"),
+        "total_issues": m.get("total_issues"),
+        "completed_issues": m.get("completed_issues"),
+        "archived": bool(m.get("archived_at")),
+        "url": _web(f"/projects/{p['id']}/modules/{m['id']}/"),
+    }
+
+
+def _module_body(p: dict, name, description, status, lead, start_date, target_date) -> dict:
+    body = {}
+    if name is not None:
+        body["name"] = name
+    if description is not None:
+        body["description"] = description
+    if status is not None:
+        if status not in MODULE_STATUSES:
+            raise ValueError(f"status must be one of {list(MODULE_STATUSES)}, got {status!r}")
+        body["status"] = status
+    if lead is not None:
+        body["lead"] = _user_id(p, lead)
+    if start_date is not None:
+        body["start_date"] = start_date
+    if target_date is not None:
+        body["target_date"] = target_date
+    return body
+
+
+def _items_by_refs(refs: list[str]) -> tuple[dict, list[dict]]:
+    """Fetch work items by ref; they must all belong to one project."""
+    if not refs:
+        raise ValueError("refs must not be empty")
+    parsed = [_split_ref(r) for r in refs]
+    projects = sorted({ident for ident, _ in parsed})
+    if len(projects) > 1:
+        raise ValueError(f"All refs must be in one project, got: {projects}")
+    p = _project(projects[0])
+    return p, [_item_by_ref(r)[1] for r in refs]
+
+
+@mcp.tool()
+def list_modules(project: str, include_archived: bool = False) -> dict:
+    """List a project's modules (e.g. project="HOME"): name, id, status
+    (backlog|planned|in-progress|paused|completed|cancelled), lead, dates, and
+    work item counts (total and completed). Archived modules only with
+    include_archived=True."""
+    p = _project(project)
+    modules = sorted(_modules(p, include_archived), key=lambda m: m["name"].lower())
+    return {"project": p["identifier"], "modules": [_format_module(p, m) for m in modules]}
+
+
+@mcp.tool()
+def get_module(project: str, module: str, summary: bool = True) -> dict:
+    """Get a module by name (case-insensitive) or id, with its work items in the
+    same shape as list_work_items (summary=False for the full shape)."""
+    p = _project(project)
+    m = _module(p, module)
+    items = sorted(_module_items(p, m), key=lambda i: i["sequence_id"])
+    return {**_format_module(p, m), "description": m.get("description"),
+            "work_items": [_format_item(p, i, full=not summary) for i in items]}
+
+
+@mcp.tool()
+def create_module(project: str, name: str, description: str = None, status: str = None,
+                  lead: str = None, start_date: str = None, target_date: str = None) -> dict:
+    """Create a module. status: backlog|planned|in-progress|paused|completed|cancelled
+    (Plane's default is planned). lead is an email, display name or "me".
+    Dates are YYYY-MM-DD. Returns the new module, including its id."""
+    p = _project(project)
+    body = _module_body(p, name, description, status, lead, start_date, target_date)
+    return _format_module(p, _request("POST", f"/projects/{p['id']}/modules/", json=body))
+
+
+@mcp.tool()
+def update_module(project: str, module: str, name: str = None, description: str = None,
+                  status: str = None, lead: str = None, start_date: str = None,
+                  target_date: str = None) -> dict:
+    """Update a module (name or id). Only provided fields change; name renames it.
+    status: backlog|planned|in-progress|paused|completed|cancelled. lead is an
+    email, display name or "me". Dates are YYYY-MM-DD."""
+    p = _project(project)
+    m = _module(p, module)
+    body = _module_body(p, name, description, status, lead, start_date, target_date)
+    if body:
+        # Plane's PATCH response is partial (no id, no counts), so merge it over what we had
+        m = {**m, **_request("PATCH", f"/projects/{p['id']}/modules/{m['id']}/", json=body)}
+    return _format_module(p, m)
+
+
+@mcp.tool()
+def add_to_module(module: str, refs: list[str]) -> dict:
+    """Add work items to a module. refs are work item refs, e.g. ["HOME-414",
+    "HOME-416"]; they must all be in one project, which is where the module is
+    looked up (by name or id). Items already in it are left alone."""
+    p, items = _items_by_refs(refs)
+    m = _module(p, module)
+    present = {i["id"] for i in _module_items(p, m)}
+    new = [i for i in items if i["id"] not in present]
+    if new:
+        _request("POST", f"/projects/{p['id']}/modules/{m['id']}/module-issues/",
+                 json={"issues": [i["id"] for i in new]})
+    ref = lambda i: f"{p['identifier']}-{i['sequence_id']}"
+    return {"module": m["name"], "added": [ref(i) for i in new],
+            "already_in_module": [ref(i) for i in items if i["id"] in present]}
+
+
+@mcp.tool()
+def remove_from_module(module: str, refs: list[str]) -> dict:
+    """Remove work items from a module (the items themselves are untouched).
+    refs are work item refs in one project; the module is a name or id."""
+    p, items = _items_by_refs(refs)
+    m = _module(p, module)
+    present = {i["id"] for i in _module_items(p, m)}
+    ref = lambda i: f"{p['identifier']}-{i['sequence_id']}"
+    removed = [i for i in items if i["id"] in present]
+    for i in removed:
+        _request("DELETE", f"/projects/{p['id']}/modules/{m['id']}/module-issues/{i['id']}/")
+    return {"module": m["name"], "removed": [ref(i) for i in removed],
+            "not_in_module": [ref(i) for i in items if i["id"] not in present]}
 
 
 def main():
