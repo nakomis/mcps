@@ -51,6 +51,7 @@ export class AlexaAnnounceStack extends cdk.Stack {
       code: lambda.Code.fromAsset(LAMBDA_SRC, {
         bundling: {
           image: lambda.Runtime.PYTHON_3_12.bundlingImage,
+          platform: 'linux/amd64',
           command: [
             'bash', '-c',
             'pip install -r requirements.txt -t /asset-output && cp -r alexa_announce /asset-output/',
@@ -59,17 +60,22 @@ export class AlexaAnnounceStack extends cdk.Stack {
           // flags the 10 Oct 2026 spike proved on Lambda.
           local: {
             tryBundle(outputDir: string): boolean {
-              execSync(
-                `uv pip install --quiet --target "${outputDir}" ` +
-                  '--python-platform x86_64-manylinux_2_28 --python-version 3.12 ' +
-                  '--only-binary :all: -r requirements.txt',
-                { cwd: LAMBDA_SRC, stdio: 'inherit' },
-              );
-              fs.cpSync(path.join(LAMBDA_SRC, 'alexa_announce'), path.join(outputDir, 'alexa_announce'), {
-                recursive: true,
-                filter: (src) => !src.includes('__pycache__'),
-              });
-              return true;
+              try {
+                execSync(
+                  `uv pip install --quiet --target "${outputDir}" ` +
+                    '--python-platform x86_64-manylinux_2_28 --python-version 3.12 ' +
+                    '--only-binary :all: -r requirements.txt',
+                  { cwd: LAMBDA_SRC, stdio: 'inherit' },
+                );
+                fs.cpSync(path.join(LAMBDA_SRC, 'alexa_announce'), path.join(outputDir, 'alexa_announce'), {
+                  recursive: true,
+                  filter: (src) => !src.includes('__pycache__'),
+                });
+                return true;
+              } catch (err) {
+                console.warn('uv bundling failed, falling back to Docker: ' + err);
+                return false;
+              }
             },
           },
         },
