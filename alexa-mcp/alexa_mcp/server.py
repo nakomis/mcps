@@ -14,6 +14,7 @@ import json
 import os
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import (
     ClientError,
     CredentialRetrievalError,
@@ -90,7 +91,11 @@ def default_devices(raw: str | None) -> list[str]:
 
 
 def _client():
-    return boto3.Session(profile_name=PROFILE).client("lambda", region_name=REGION)
+    # One attempt only: a boto3 retry after a read timeout could announce twice.
+    config = Config(
+        retries={"max_attempts": 1, "mode": "standard"}, read_timeout=40, connect_timeout=10
+    )
+    return boto3.Session(profile_name=PROFILE).client("lambda", region_name=REGION, config=config)
 
 
 def _invoke(payload: dict, client) -> dict:

@@ -165,3 +165,17 @@ def test_transport_error_twice_is_amazon_error_and_next_call_reopens():
 def test_opener_transport_error_once_then_succeeds():
     p = provider_for(AmazonTransportError("login timed out"), FakeSession())
     assert run(h.handle(EVENT, p))["ok"] is True
+
+
+def test_send_uncertain_is_not_retried_and_resets():
+    from alexa_announce.session import AmazonSendUncertain
+
+    s = FakeSession(run_errors=[AmazonSendUncertain("read timeout")])
+    p = provider_for(s, FakeSession())
+    r = run(h.handle(EVENT, p))
+    assert r["ok"] is False and r["error"] == "amazon_error"
+    assert r["detail"]["status"] is None
+    assert r["detail"]["body"].startswith("request may have reached Amazon; not retried:")
+    assert len(p.opened) == 1  # single attempt
+    assert s.closed  # provider reset
+    assert p._session is None

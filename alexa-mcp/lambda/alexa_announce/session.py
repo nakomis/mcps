@@ -25,6 +25,13 @@ class AmazonTransportError(SessionUnusable):
     """Network/transport failure talking to Amazon (timeout, reset, DNS, TLS)."""
 
 
+class AmazonSendUncertain(Exception):
+    """The request may already have reached Amazon, so it must NOT be retried.
+
+    Deliberately not a SessionUnusable: the handler's retry would announce twice.
+    """
+
+
 class AmazonError(Exception):
     def __init__(self, status: int, body: str):
         super().__init__(f"Amazon returned HTTP {status}")
@@ -52,12 +59,22 @@ class AlexaSession:
             oauth={k: state[k] for k in ("refresh_token", "mac_dms") if state.get(k)},
             uuid=state.get("uuid"),
         )
+        # Never login.login(): when the refresh chain fails it resets and falls
+        # back to a credentials sign-in form POST (email, empty password) against
+        # the user's Amazon account. From AWS, only the refresh token is ever
+        # used; never a password.
         try:
-            await login.login()
+            login._create_session()
+            ok = (
+                await login.refresh_access_token()
+                and await login.exchange_token_for_cookies()
+                and await login.get_csrf()
+                and await login.test_loggedin(rebuild_session=False)
+            )
         except Exception as e:
             await _close_quietly(login)
             raise AmazonTransportError(f"login failed: {e}") from e
-        if not (login.status or {}).get("login_successful"):
+        if not ok:
             await _close_quietly(login)
             raise SessionExpired("Amazon rejected the stored refresh token")
         return cls(login)
@@ -69,9 +86,18 @@ class AlexaSession:
     async def devices(self) -> list[dict]:
         if self._devices is None:
             from alexapy import AlexaAPI
+            from alexapy.errors import (
+                AlexapyConnectionError,
+                AlexapyLoginError,
+                AlexapyTooManyRequestsError,
+            )
 
             try:
                 devices = await AlexaAPI.get_devices(self._login)
+            except AlexapyLoginError as e:
+                raise AmazonAuthError(f"device list refused: {e}") from e
+            except (AlexapyConnectionError, AlexapyTooManyRequestsError) as e:
+                raise AmazonTransportError(f"device list failed: {e}") from e
             except _transport_errors() as e:
                 raise AmazonTransportError(f"device list failed: {e}") from e
             if not devices:
@@ -90,18 +116,25 @@ class AlexaSession:
             "Referer": f"https://alexa.{login.url}/spa/index.html",
             "Content-Type": "application/json; charset=UTF-8",
         }
+        import aiohttp
+
         try:
-            resp = await login.session.post(
+            async with login.session.post(
                 f"https://alexa.{login.url}/api/behaviors/preview",
                 data=behaviour_body(start_node),
                 headers=headers,
-            )
-            if resp.status in (401, 403):
-                raise AmazonAuthError(f"HTTP {resp.status}")
-            if not 200 <= resp.status < 300:
-                raise AmazonError(resp.status, await resp.text())
+            ) as resp:  # the context manager releases the response, 2xx included
+                if resp.status in (401, 403):
+                    raise AmazonAuthError(f"HTTP {resp.status}")
+                if not 200 <= resp.status < 300:
+                    raise AmazonError(resp.status, await resp.text())
+        except aiohttp.ClientConnectorError as e:
+            # Never got a connection, so nothing was sent: safe to retry.
+            raise AmazonTransportError(f"connection failed: {e}") from e
         except _transport_errors() as e:
-            raise AmazonTransportError(f"request failed: {e}") from e
+            # The request may have been accepted before the failure; retrying
+            # could announce twice.
+            raise AmazonSendUncertain(f"request failed after send: {e}") from e
 
     async def close(self) -> None:
         await self._login.close()

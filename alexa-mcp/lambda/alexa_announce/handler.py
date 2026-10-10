@@ -17,6 +17,7 @@ from alexa_announce.session import (
     AlexaSession,
     AmazonAuthError,
     AmazonError,
+    AmazonSendUncertain,
     AmazonTransportError,
     SessionExpired,
     SessionUnusable,
@@ -24,7 +25,8 @@ from alexa_announce.session import (
 
 log = logging.getLogger("alexa_announce")
 log.setLevel(logging.INFO)
-logging.getLogger("alexapy").setLevel(logging.WARNING)
+# ERROR, not WARNING: alexapy's exception logs can include request headers (cookies).
+logging.getLogger("alexapy").setLevel(logging.ERROR)
 
 SECRET_ID = os.environ.get("SECRET_ID", "alexa-announce/session")
 WORKDIR = "/tmp/alexapy"
@@ -91,6 +93,11 @@ async def handle(event: dict, provider: Provider) -> dict:
         await provider.reset()
         result = {"ok": False, "error": "amazon_error",
                   "detail": {"status": None, "body": str(e)[:300]}}
+    except AmazonSendUncertain as e:
+        await provider.reset()
+        result = {"ok": False, "error": "amazon_error",
+                  "detail": {"status": None,
+                             "body": f"request may have reached Amazon; not retried: {e}"[:300]}}
     except AmazonError as e:
         result = {"ok": False, "error": "amazon_error",
                   "detail": {"status": e.status, "body": e.body[:300]}}
