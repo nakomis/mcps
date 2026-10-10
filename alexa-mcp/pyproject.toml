@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "MCP server for Alexa announcements and speech on Echo devices"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp[cli]>=1.0.0",
+    "mcp[cli]>=1.0.0,<2",
     "boto3>=1.35.0",
 ]
 

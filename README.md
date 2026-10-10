@@ -16,11 +16,13 @@ If you find this useful, please consider buying me a coffee:
 | [plane-mcp](plane-mcp/) | Read/write access to the self-hosted Plane (work items by ref, e.g. HOME-42) |
 | [trello-mcp](trello-mcp/) | Read/write access to Trello boards, lists, and cards |
 | [falai-mcp](falai-mcp/) | Image generation, editing, and object removal via fal.ai FLUX.2 |
+| [alexa-mcp](alexa-mcp/) | Alexa announcements and speech on named Echos, via an alexapy Lambda |
 
 ## Infrastructure
 
-[`infra/`](infra/) is a CDK app for the AWS resources some servers need — currently
-just the staging bucket `falai-mcp` uses. Sandbox only, deployed by hand.
+[`infra/`](infra/) is a CDK app for the AWS resources some servers need: the
+staging bucket `falai-mcp` uses (sandbox only) and the `alexa-announce` Lambda
+(sandbox and prod). Deployed by hand.
 
 ## Installation
 
