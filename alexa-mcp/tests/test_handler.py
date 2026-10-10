@@ -2,7 +2,12 @@ import asyncio
 import logging
 
 from alexa_announce import handler as h
-from alexa_announce.session import AmazonAuthError, AmazonError, SessionExpired
+from alexa_announce.session import (
+    AmazonAuthError,
+    AmazonError,
+    AmazonTransportError,
+    SessionExpired,
+)
 
 DEVICES = [
     {"accountName": "Bedroom Echo", "serialNumber": "S3", "deviceType": "T",
@@ -128,4 +133,35 @@ def test_log_line_never_contains_message_text(caplog):
     caplog.set_level(logging.INFO)
     run(h.handle({**EVENT, "text": "secret-plans-xyzzy"}, provider_for(FakeSession())))
     assert "secret-plans-xyzzy" not in caplog.text
-    assert "Bedroom Echo" in caplog.text or "bedroom echo" in caplog.text
+    assert "bedroom echo" in caplog.text
+
+
+def test_transport_error_retries_on_fresh_session():
+    first = FakeSession(run_errors=[AmazonTransportError("reset by peer")])
+    second = FakeSession()
+    p = provider_for(first, second)
+    assert run(h.handle(EVENT, p))["ok"] is True
+    assert first.closed is True
+    assert len(second.ran) == 1
+
+
+def test_transport_error_twice_is_amazon_error_and_next_call_reopens():
+    first = FakeSession(run_errors=[AmazonTransportError("timed out")])
+    second = FakeSession(run_errors=[AmazonTransportError("timed out")])
+    third = FakeSession()
+    p = provider_for(first, second, third)
+    out = run(h.handle(EVENT, p))
+    assert out["ok"] is False
+    assert out["error"] == "amazon_error"
+    assert out["detail"]["status"] is None
+    assert "timed out" in out["detail"]["body"]
+    assert second.closed is True
+    # The provider was reset, so the next call opens a new session.
+    assert run(h.handle(EVENT, p))["ok"] is True
+    assert len(p.opened) == 3
+    assert len(third.ran) == 1
+
+
+def test_opener_transport_error_once_then_succeeds():
+    p = provider_for(AmazonTransportError("login timed out"), FakeSession())
+    assert run(h.handle(EVENT, p))["ok"] is True

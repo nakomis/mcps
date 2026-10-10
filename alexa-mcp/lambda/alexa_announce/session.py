@@ -3,7 +3,7 @@
 alexapy is imported lazily so the pure logic and handler can be tested without it.
 """
 
-import json
+import asyncio
 import os
 
 from alexa_announce.core import behaviour_body
@@ -13,8 +13,16 @@ class SessionExpired(Exception):
     """The stored registration no longer works. Someone must run alexa-mcp-login."""
 
 
-class AmazonAuthError(Exception):
+class SessionUnusable(Exception):
+    """Common base: this session cannot be trusted any more and must be dropped."""
+
+
+class AmazonAuthError(SessionUnusable):
     """Amazon refused a warm session (401/403). Worth one fresh login."""
+
+
+class AmazonTransportError(SessionUnusable):
+    """Network/transport failure talking to Amazon (timeout, reset, DNS, TLS)."""
 
 
 class AmazonError(Exception):
@@ -44,9 +52,13 @@ class AlexaSession:
             oauth={k: state[k] for k in ("refresh_token", "mac_dms") if state.get(k)},
             uuid=state.get("uuid"),
         )
-        await login.login()
+        try:
+            await login.login()
+        except Exception as e:
+            await _close_quietly(login)
+            raise AmazonTransportError(f"login failed: {e}") from e
         if not (login.status or {}).get("login_successful"):
-            await login.close()
+            await _close_quietly(login)
             raise SessionExpired("Amazon rejected the stored refresh token")
         return cls(login)
 
@@ -58,7 +70,10 @@ class AlexaSession:
         if self._devices is None:
             from alexapy import AlexaAPI
 
-            devices = await AlexaAPI.get_devices(self._login)
+            try:
+                devices = await AlexaAPI.get_devices(self._login)
+            except _transport_errors() as e:
+                raise AmazonTransportError(f"device list failed: {e}") from e
             if not devices:
                 # alexapy swallows errors and returns None; an account always has
                 # devices, so treat an empty list as a dead session.
@@ -75,15 +90,35 @@ class AlexaSession:
             "Referer": f"https://alexa.{login.url}/spa/index.html",
             "Content-Type": "application/json; charset=UTF-8",
         }
-        resp = await login.session.post(
-            f"https://alexa.{login.url}/api/behaviors/preview",
-            data=behaviour_body(start_node),
-            headers=headers,
-        )
-        if resp.status in (401, 403):
-            raise AmazonAuthError(f"HTTP {resp.status}")
-        if not 200 <= resp.status < 300:
-            raise AmazonError(resp.status, await resp.text())
+        try:
+            resp = await login.session.post(
+                f"https://alexa.{login.url}/api/behaviors/preview",
+                data=behaviour_body(start_node),
+                headers=headers,
+            )
+            if resp.status in (401, 403):
+                raise AmazonAuthError(f"HTTP {resp.status}")
+            if not 200 <= resp.status < 300:
+                raise AmazonError(resp.status, await resp.text())
+        except _transport_errors() as e:
+            raise AmazonTransportError(f"request failed: {e}") from e
 
     async def close(self) -> None:
         await self._login.close()
+
+
+async def _close_quietly(login) -> None:
+    try:
+        await login.close()
+    except Exception:  # a failed close must not mask the error that got us here
+        pass
+
+
+def _transport_errors() -> tuple:
+    """Exceptions that mean the network failed, not that Amazon answered.
+
+    aiohttp is imported lazily, like alexapy, so the tests need neither.
+    """
+    import aiohttp
+
+    return (asyncio.TimeoutError, OSError, aiohttp.ClientError)

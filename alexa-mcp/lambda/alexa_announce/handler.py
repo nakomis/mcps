@@ -13,7 +13,14 @@ import os
 import time
 
 from alexa_announce import core
-from alexa_announce.session import AlexaSession, AmazonAuthError, AmazonError, SessionExpired
+from alexa_announce.session import (
+    AlexaSession,
+    AmazonAuthError,
+    AmazonError,
+    AmazonTransportError,
+    SessionExpired,
+    SessionUnusable,
+)
 
 log = logging.getLogger("alexa_announce")
 log.setLevel(logging.INFO)
@@ -72,7 +79,7 @@ async def handle(event: dict, provider: Provider) -> dict:
         action, text, names = core.validate(event)
         try:
             sent = await _send(provider, action, text, names)
-        except AmazonAuthError:
+        except SessionUnusable:
             await provider.reset()
             sent = await _send(provider, action, text, names)
     except core.RequestError as e:
@@ -80,6 +87,10 @@ async def handle(event: dict, provider: Provider) -> dict:
     except (SessionExpired, AmazonAuthError) as e:
         await provider.reset()
         result = {"ok": False, "error": "session_expired", "detail": str(e)}
+    except AmazonTransportError as e:
+        await provider.reset()
+        result = {"ok": False, "error": "amazon_error",
+                  "detail": {"status": None, "body": str(e)[:300]}}
     except AmazonError as e:
         result = {"ok": False, "error": "amazon_error",
                   "detail": {"status": e.status, "body": e.body[:300]}}
