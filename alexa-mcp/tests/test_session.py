@@ -217,3 +217,55 @@ def test_run_http_codes(tmp_path):
     sess, _ = session_with_post(tmp_path, resp=FakeResp(500, "bad"))
     with pytest.raises(s.AmazonError):
         run(sess.run({"type": "x"}))
+
+
+@pytest.fixture
+def no_backoff(monkeypatch):
+    monkeypatch.setattr(s, "RATE_LIMIT_BACKOFF_S", 0)
+
+
+def session_with_sequence(tmp_path, outcomes):
+    """Each POST pops the next outcome: a FakeResp is returned, an exception raised."""
+    sess = open_session(tmp_path)
+    log = []
+    posts = []
+    queue = list(outcomes)
+    login = FakeLogin.last
+    login._get_cookies_from_session = lambda: {}
+    login._headers = {}
+    login.url = "amazon.co.uk"
+
+    def post(*a, **k):
+        posts.append(a)
+        item = queue.pop(0)
+        if isinstance(item, BaseException):
+            return FakePost(exc=item, log=log)
+        return FakePost(resp=item, log=log)
+
+    login.session = types.SimpleNamespace(post=post)
+    return sess, log, posts
+
+
+def test_run_retries_once_after_429(tmp_path, no_backoff):
+    sess, log, posts = session_with_sequence(tmp_path, [FakeResp(429, "Rate exceeded"), FakeResp(200)])
+    run(sess.run({"type": "x"}))
+    assert len(posts) == 2
+    assert log == ["released", "released"]
+
+
+def test_run_429_twice_is_amazon_error(tmp_path, no_backoff):
+    sess, _, posts = session_with_sequence(
+        tmp_path, [FakeResp(429, "Rate exceeded"), FakeResp(429, "Rate exceeded")]
+    )
+    with pytest.raises(s.AmazonError) as info:
+        run(sess.run({"type": "x"}))
+    assert info.value.status == 429
+    assert len(posts) == 2
+
+
+def test_run_500_is_not_retried(tmp_path, no_backoff):
+    sess, _, posts = session_with_sequence(tmp_path, [FakeResp(500, "bad")])
+    with pytest.raises(s.AmazonError) as info:
+        run(sess.run({"type": "x"}))
+    assert info.value.status == 500
+    assert len(posts) == 1

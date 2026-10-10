@@ -9,6 +9,10 @@ import os
 from alexa_announce.core import behaviour_body
 
 
+# Amazon answers 429 ("Rate exceeded") when sequences arrive back to back.
+RATE_LIMIT_BACKOFF_S = 2.0
+
+
 class SessionExpired(Exception):
     """The stored registration no longer works. Someone must run alexa-mcp-login."""
 
@@ -118,16 +122,18 @@ class AlexaSession:
         }
         import aiohttp
 
+        url = f"https://alexa.{login.url}/api/behaviors/preview"
+        body = behaviour_body(start_node)
         try:
-            async with login.session.post(
-                f"https://alexa.{login.url}/api/behaviors/preview",
-                data=behaviour_body(start_node),
-                headers=headers,
-            ) as resp:  # the context manager releases the response, 2xx included
-                if resp.status in (401, 403):
-                    raise AmazonAuthError(f"HTTP {resp.status}")
-                if not 200 <= resp.status < 300:
-                    raise AmazonError(resp.status, await resp.text())
+            try:
+                await self._post_preview(url, body, headers)
+            except AmazonError as e:
+                if e.status != 429:
+                    raise
+                # Amazon refused the request with 429, so nothing played and
+                # resending it once is safe.
+                await asyncio.sleep(RATE_LIMIT_BACKOFF_S)
+                await self._post_preview(url, body, headers)
         except aiohttp.ClientConnectorError as e:
             # Never got a connection, so nothing was sent: safe to retry.
             raise AmazonTransportError(f"connection failed: {e}") from e
@@ -135,6 +141,14 @@ class AlexaSession:
             # The request may have been accepted before the failure; retrying
             # could announce twice.
             raise AmazonSendUncertain(f"request failed after send: {e}") from e
+
+    async def _post_preview(self, url: str, body, headers: dict) -> None:
+        """One POST attempt. The context manager releases the response, 2xx included."""
+        async with self._login.session.post(url, data=body, headers=headers) as resp:
+            if resp.status in (401, 403):
+                raise AmazonAuthError(f"HTTP {resp.status}")
+            if not 200 <= resp.status < 300:
+                raise AmazonError(resp.status, await resp.text())
 
     async def close(self) -> None:
         await self._login.close()
