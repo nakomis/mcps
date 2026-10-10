@@ -1,0 +1,30 @@
+[project]
+name = "alexa-mcp"
+version = "0.1.0"
+description = "MCP server for Alexa announcements and speech on Echo devices"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.2,<2",
+    "boto3>=1.35.0",
+]
+
+[project.optional-dependencies]
+login = ["alexapy==1.31.0"]
+
+[project.scripts]
+alexa-mcp = "alexa_mcp.server:main"
+alexa-mcp-login = "alexa_mcp.login:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["lambda", "."]
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["alexa_mcp"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

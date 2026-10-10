@@ -21,3 +21,10 @@ name = "image-gen"
 description = "image generation & editing (fal.ai FLUX.2)"
 command = ["uv", "--directory", "/path/to/mcps/falai-mcp", "run", "falai-mcp"]
 env = {AWS_PROFILE = "your-profile", AWS_REGION = "eu-west-2"}
+
+[[mcps]]
+name = "alexa"
+description = "Alexa announcements and speech on the Echos"
+command = ["uv", "--directory", "/path/to/mcps/alexa-mcp", "run", "alexa-mcp"]
+# Defaults to prod (profile nakom.is). Set ALEXA_AWS_PROFILE = "nakom.is-sandbox" for sandbox.
+env = {ALEXA_DEFAULT_DEVICES = "Martin's Kitchen Echo Dot,Martin's Echo Show,Bedroom Echo"}

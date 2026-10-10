@@ -9,9 +9,11 @@
     "build": "tsc",
     "watch": "tsc -w",
     "cdk": "cdk",
-    "deploy-sandbox": "cdk deploy --profile nakom.is-sandbox --require-approval never",
-    "synth-sandbox": "cdk synth --profile nakom.is-sandbox",
-    "destroy-sandbox": "cdk destroy --profile nakom.is-sandbox",
+    "synth-sandbox": "NPM_ENVIRONMENT=sandbox cdk synth --profile nakom.is-sandbox",
+    "synth-prod": "NPM_ENVIRONMENT=prod cdk synth --profile nakom.is-admin",
+    "deploy-sandbox": "NPM_ENVIRONMENT=sandbox cdk deploy --profile nakom.is-sandbox --all --require-approval never",
+    "deploy-prod": "NPM_ENVIRONMENT=prod cdk deploy --profile nakom.is-admin --all --require-approval never",
+    "destroy-sandbox": "NPM_ENVIRONMENT=sandbox cdk destroy --profile nakom.is-sandbox --all",
     "update-dependencies": "pnpm dlx npm-check-updates -u && pnpm install"
   },
   "dependencies": {

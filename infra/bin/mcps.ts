@@ -1,18 +1,33 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
 import * as fs from 'fs';
+import { AlexaAnnounceStack } from '../lib/alexa-announce-stack';
 import { FalaiUploadsStack } from '../lib/falai-uploads-stack';
 
-// Sandbox only — this account holds one throwaway staging bucket, so the
-// sandbox/prod split the other projects carry would be pure ceremony here.
+const deployEnv = process.env.NPM_ENVIRONMENT;
+if (deployEnv !== 'sandbox' && deployEnv !== 'prod') {
+  throw new Error(`NPM_ENVIRONMENT must be 'sandbox' or 'prod', got: '${deployEnv ?? ''}'`);
+}
+
 const sandboxAccountId = '975050268859';
-const londonEnv = { env: { account: sandboxAccountId, region: 'eu-west-2' } };
+const prodAccountId = '637423226886';
+const accountId = deployEnv === 'prod' ? prodAccountId : sandboxAccountId;
+const londonEnv = { env: { account: accountId, region: 'eu-west-2' } };
 
 const app = new cdk.App();
 
-new FalaiUploadsStack(app, 'McpsFalaiUploadsStack', {
+// One throwaway staging bucket: a prod copy would be pure ceremony.
+if (deployEnv === 'sandbox') {
+  new FalaiUploadsStack(app, 'McpsFalaiUploadsStack', {
+    ...londonEnv,
+    description: 'Short-lived image staging bucket for falai-mcp (sandbox)',
+  });
+}
+
+new AlexaAnnounceStack(app, 'McpsAlexaAnnounceStack', {
   ...londonEnv,
-  description: 'Short-lived image staging bucket for falai-mcp (sandbox)',
+  deployEnv,
+  description: `Alexa announcements via alexapy for alexa-mcp (${deployEnv})`,
 });
 
 const { version: infraVersion } = JSON.parse(fs.readFileSync('./version.json', 'utf-8'));
