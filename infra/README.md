@@ -1,37 +1,46 @@
 # mcps infra
 
-CDK app for AWS resources backing the MCP servers in this repo. Currently one
-stack, holding one bucket.
+CDK app for AWS resources backing the MCP servers in this repo.
 
-## Why it exists
+| Stack | Environments | For |
+|---|---|---|
+| `McpsFalaiUploadsStack` | sandbox only | staging bucket for [`falai-mcp`](../falai-mcp/) |
+| `McpsAlexaAnnounceStack` | sandbox + prod | the `alexa-announce` Lambda behind [`alexa-mcp`](../alexa-mcp/) |
+
+`NPM_ENVIRONMENT` (`sandbox` | `prod`) picks the account: sandbox `975050268859`,
+prod `637423226886`, both `eu-west-2`. No CI; deployed by hand.
+
+## Deploying
+
+```bash
+pnpm install
+pnpm run synth-sandbox    # or synth-prod
+pnpm run deploy-sandbox   # nakom.is-sandbox
+pnpm run deploy-prod      # nakom.is-admin
+```
+
+Lambda bundling uses `uv` on the host (no Docker); it falls back to the
+Python 3.12 bundling image if local bundling is unavailable.
+
+## Alexa announce stack
+
+- `alexa-announce`: Python 3.12 Lambda, alexapy, 30 s timeout, 30-day logs.
+- `alexa-announce/session`: the Amazon device registration. CDK creates a
+  placeholder; fill it with `alexa-mcp-login <email> --profile <profile>`. It
+  is retained on stack deletion. **Don't change the secret's generator settings**:
+  CloudFormation would regenerate the value and wipe the registration.
+- Callers need only `lambda:InvokeFunction` on the function.
+
+## falai uploads bucket (sandbox only)
 
 fal.ai's image-editing endpoints accept image **URLs**, not uploads, so
 [`falai-mcp`](../falai-mcp/) needs somewhere to put a local file for the length
 of a single API call. `nak-sandbox-falai-uploads` is that somewhere.
 
 The MCP deletes each object as soon as the call returns. The bucket's 24-hour
-lifecycle rule catches whatever escapes that — a crash, a dropped connection,
-a killed process.
-
-## Sandbox only
-
-No prod stage, no CI. This is one throwaway bucket in the sandbox account
-(`975050268859`, `eu-west-2`); the sandbox/prod split the other projects carry
-would be pure ceremony. It is deployed by hand, rarely.
-
-## Deploying
-
-```bash
-pnpm install
-pnpm run synth-sandbox     # inspect the template
-pnpm run deploy-sandbox    # apply
-```
-
-Uses the `nakom.is-sandbox` profile.
-
-The stack outputs the bucket name. `falai-mcp` defaults to it, so nothing needs
-wiring unless you rename it — in which case set `FALAI_BUCKET` in
-`meta-mcp/config.toml`.
+lifecycle rule catches whatever escapes that. The stack outputs the bucket name;
+`falai-mcp` defaults to it, so set `FALAI_BUCKET` in `meta-mcp/config.toml` only
+if you rename it.
 
 ## The bucket
 
