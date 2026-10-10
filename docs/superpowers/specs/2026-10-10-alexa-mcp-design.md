@@ -101,7 +101,7 @@ Sandbox **and** prod, following the `home-servers/infra/cdk` pattern:
   - If an Amazon call fails with 401 or 403 on a warm session, it discards the session,
     logs in again once and retries once.
 - Device resolution:
-  - It fetches the device list (once per warm session) and matches **exact**
+  - It fetches the device list (once per warm session) and matches **exact after ignoring case and treating ’ as '**
     `accountName`s.
   - Any unmatched name fails the whole call. Nothing is sent.
   - An empty list gives `bad_request`, never "all devices".
@@ -194,7 +194,7 @@ The real `config.toml` (gitignored) is updated the same way.
 ## Testing
 
 - pytest, in `alexa-mcp/tests/`:
-  - device resolution: exact matching, unknown names, empty list
+  - device resolution: matching (exact after ignoring case and treating ’ as '), unknown names, empty list
   - payload building: announcement, speak, ParallelNode shape
   - text validation
   - turning MCP error envelopes into readable results, with a stubbed Lambda client

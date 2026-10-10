@@ -29,6 +29,10 @@ Python 3.12 bundling image if local bundling is unavailable.
   placeholder; fill it with `alexa-mcp-login <email> --profile <profile>`. It
   is retained on stack deletion. **Don't change the secret's generator settings**:
   CloudFormation would regenerate the value and wipe the registration.
+  If a failed first deploy or a destroy leaves the retained secret orphaned,
+  remove it before redeploying (this deletes the registration; log in again
+  afterwards):
+  `aws secretsmanager delete-secret --secret-id alexa-announce/session --force-delete-without-recovery --profile <profile> --region eu-west-2`
 - Callers need only `lambda:InvokeFunction` on the function.
 
 ## falai uploads bucket (sandbox only)
