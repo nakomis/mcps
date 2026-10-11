@@ -17,6 +17,7 @@ If you find this useful, please consider buying me a coffee:
 | [trello-mcp](trello-mcp/) | Read/write access to Trello boards, lists, and cards |
 | [falai-mcp](falai-mcp/) | Image generation, editing, and object removal via fal.ai FLUX.2 |
 | [alexa-mcp](alexa-mcp/) | Alexa announcements and speech on named Echos, via an alexapy Lambda |
+| [screeneye](screeneye/) | An iPhone camera pointed at a screen: snapshot, crop, zoom and focus, found over Bonjour |
 
 ## Infrastructure
 

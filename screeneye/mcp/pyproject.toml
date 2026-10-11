@@ -1,0 +1,23 @@
+[project]
+name = "screeneye-mcp"
+version = "0.1.0"
+description = "MCP server for ScreenEye: an iPhone camera pointed at a screen, for Claude to read"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.0.0,<2",
+    "httpx>=0.27.0",
+    "pillow>=10.0.0",
+    "zeroconf>=0.131.0",
+]
+
+[project.scripts]
+screeneye-mcp = "screeneye_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
