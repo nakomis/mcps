@@ -48,7 +48,7 @@ from botocore.exceptions import (
     UnauthorizedSSOTokenError,
 )
 from mcp.server.fastmcp import FastMCP
-from PIL import Image
+from PIL import Image, ImageFilter
 from pydantic import BaseModel, Field
 
 mcp = FastMCP("falai-mcp")
@@ -121,6 +121,22 @@ MODELS_3D = {
     "tripo": "tripo3d/h3.1/image-to-3d",
     "pixal3d": "fal-ai/pixal3d",
 }
+
+# Icons. Both styles are generated, then cut out with BiRefNet. A "pixel" one
+# then goes through image2pixel, which snaps it to a true grid and quantises
+# the palette. image2pixel does not resize to a requested size — it detects the
+# grid the image already has — so the prompt has to ask for pixel art first.
+#
+# image2pixel's own background removal flood-fills from the corners, and
+# Seedream's "solid" backgrounds are faint gradients: on 2026-10-13 it left a
+# magenta slab behind. BiRefNet first, then image2pixel, is reliable.
+#
+# The two return different shapes: BiRefNet a single `image`, image2pixel an
+# `images` list holding the snapped art at full size *and* at its native grid
+# size (2037px and 97px on that run) — pick by size, not by position.
+BG_REMOVE_ENDPOINT = "https://fal.run/fal-ai/birefnet/v2"
+PIXELATE_ENDPOINT = "https://fal.run/fal-ai/image2pixel"
+ICON_STYLES = {"flat", "pixel", "glyph"}
 
 DEFAULT_MODEL = "seedream"
 DEFAULT_REMOVE_MODEL = "object-removal"
@@ -636,6 +652,267 @@ class Model3DResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+# ── Icon helpers ──────────────────────────────────────────────────────────────
+
+# Chrome draws a tab favicon at 16 CSS px — 32 physical on a Retina display —
+# so the icon has to survive both. 48 is the Windows desktop size; 180 is the
+# Apple touch icon; 192 and 512 are what a web manifest asks for.
+DEFAULT_ICON_SIZES = [16, 32, 48, 180, 192, 512]
+# A menu bar extra is 22pt tall at most and 16-18pt is the usual glyph, at
+# 1x and 2x. The conversation-memory tray icons are 44x44 (22pt @2x).
+DEFAULT_GLYPH_SIZES = [16, 18, 22, 32, 36, 44]
+ICO_SIZES = [16, 32, 48]
+
+# Chrome's own tab-strip colours, so the preview shows the icon where it will
+# actually live, in both themes.
+PREVIEW_BACKGROUNDS = [(241, 243, 244, 255), (53, 54, 58, 255)]
+# ...and the macOS menu bar's, for glyphs. A template glyph is shown black on
+# the light bar; the dark row shows it as macOS draws it there, in white.
+MENU_BAR_BACKGROUNDS = [(236, 236, 236, 255), (30, 30, 30, 255)]
+PREVIEW_ZOOM = 8
+
+# Small icons fail on detail, not on colour, so the template insists on bold
+# shapes.
+ICON_PROMPTS = {
+    "flat": (
+        "{subject}, as a flat vector app icon. Bold, simple silhouette made of "
+        "thick shapes with no fine detail, so it stays recognisable at 16 pixels. "
+        "At most four flat colours{colours}. No gradients, no text, no glow, no "
+        "drop shadow. Centred and filling most of the frame, on a plain pure "
+        "white background."
+    ),
+    "pixel": (
+        "{subject}, as a 32x32 pixel-art sprite. Chunky square pixels on a clear "
+        "grid, limited palette{colours}, hard edges, no anti-aliasing, no text, "
+        "no shadow. Centred, on a plain pure white background."
+    ),
+    # Details as cut-outs, not as lines of another colour: a glyph has one
+    # colour, so a dark lens drawn on a dark head would vanish into it.
+    "glyph": (
+        "{subject}, as a monochrome glyph icon in the style of an SF Symbol. "
+        "Solid black filled shapes only, bold and simple. Only a few large "
+        "interior details, such as lenses, shown as white cut-outs; no thin "
+        "panel lines. No outlines-only drawing, no grey, no shading, no text. "
+        "Centred, on a plain pure white background."
+    ),
+}
+
+# Luminance thresholds for turning a black-on-white glyph into alpha. Below
+# INK is fully opaque, above PAPER fully transparent, linear in between so
+# anti-aliased edges stay smooth. PAPER sits below pure white because
+# generated "white" backgrounds are never quite 255.
+GLYPH_INK, GLYPH_PAPER = 40, 230
+
+
+def _square_on_alpha(img: Image.Image, margin: float) -> tuple[Image.Image, list[str]]:
+    """Crop to the visible pixels and centre them on a transparent square.
+
+    margin is a fraction of the content's longest side, added on every side.
+    """
+    img = img.convert("RGBA")
+    bbox = img.getchannel("A").getbbox()
+    if bbox is None:
+        raise ValueError(
+            "The cut-out is empty: background removal took the whole image. "
+            "Try a different prompt or a plainer source image."
+        )
+    warnings = []
+    if bbox == (0, 0, *img.size):
+        warnings.append(
+            "Nothing was trimmed: the icon touches every edge, which usually "
+            "means the background was not removed. Check the preview."
+        )
+    content = img.crop(bbox)
+    side = max(content.size)
+    pad = round(side * margin)
+    canvas = Image.new("RGBA", (side + 2 * pad,) * 2, (0, 0, 0, 0))
+    canvas.paste(content, (pad + (side - content.width) // 2, pad + (side - content.height) // 2))
+    return canvas, warnings
+
+
+def _glyph_from_luminance(img: Image.Image) -> Image.Image:
+    """Black glyph whose alpha is the source's darkness: ink opaque, paper gone."""
+    if "A" in img.getbands() or img.mode == "P":
+        # A transparent logo's empty pixels are usually RGB black: flatten
+        # onto white first, or they would all become ink.
+        flat = Image.new("RGBA", img.size, (255, 255, 255, 255))
+        flat.alpha_composite(img.convert("RGBA"))
+        img = flat
+    lum = img.convert("L")
+    span = GLYPH_PAPER - GLYPH_INK
+    alpha = lum.point(lambda v: 255 if v <= GLYPH_INK else 0 if v >= GLYPH_PAPER
+                      else round(255 * (GLYPH_PAPER - v) / span))
+    glyph = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    glyph.putalpha(alpha)
+    return glyph
+
+
+def _render_glyph(img: Image.Image, size: int) -> Image.Image:
+    """Downscale a glyph, first filling cut-outs too thin to survive the size.
+
+    A white panel line narrower than an output pixel does not vanish when
+    downscaled; it averages into grey and the glyph looks mottled. So the
+    alpha is taken to 4x the target, closed (dilate then erode) with a 5px
+    kernel, which fills any gap under ~1 output pixel and leaves bigger holes
+    alone, and only then brought down to size.
+    """
+    work = img.getchannel("A").resize((size * 4,) * 2, Image.LANCZOS)
+    work = work.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.MinFilter(5))
+    alpha = work.resize((size, size), Image.LANCZOS)
+    # A glyph is one colour throughout, so its RGB survives any resampling.
+    out = img.convert("RGB").resize((size, size), Image.NEAREST).convert("RGBA")
+    out.putalpha(alpha)
+    return out
+
+
+def _tint(img: Image.Image, colour: str) -> Image.Image:
+    """The same shape, every pixel recoloured to colour; alpha untouched."""
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", colour.strip()):
+        raise ValueError(f"Tint colours must be #RRGGBB (got {colour!r}).")
+    rgb = tuple(int(colour.strip()[i:i + 2], 16) for i in (1, 3, 5))
+    tinted = Image.new("RGBA", img.size, rgb + (0,))
+    tinted.putalpha(img.convert("RGBA").getchannel("A"))
+    return tinted
+
+
+# Files a run writes into its own folder, which a tint subfolder must not shadow.
+_RUN_FILES = {"source", "cutout", "preview", "favicon"}
+
+
+def _check_tint_names(tints: dict[str, str]) -> None:
+    """Tint names become folder names, so keep them to plain words."""
+    for name, colour in tints.items():
+        if not re.fullmatch(r"[\w-]+", name) or name in _RUN_FILES or name.startswith("icon-"):
+            raise ValueError(
+                f"Tint name {name!r} must be letters, digits, - or _, and not one "
+                f"of {sorted(_RUN_FILES)} or icon-*."
+            )
+        _tint(Image.new("RGBA", (1, 1)), colour)
+
+
+def _sprite_size(img: Image.Image) -> int:
+    """A pixel sprite's own size: its visible content, before any margin."""
+    return max(_square_on_alpha(img, 0.0)[0].size)
+
+
+def _pixel_size_warnings(native: int, sizes: list[int]) -> list[str]:
+    """Sizes a pixel sprite cannot be scaled to without dropping pixels."""
+    uneven = [s for s in sizes if s % native]
+    if not uneven:
+        return []
+    return [
+        f"The sprite canvas is {native}x{native} (margin included), so sizes {', '.join(map(str, uneven))} "
+        "are not whole multiples of it: nearest-neighbour scaling drops or doubles "
+        "some pixels there. Check them in the preview."
+    ]
+
+
+def _preview_sheet(
+    icons: dict[int, Image.Image], backgrounds=PREVIEW_BACKGROUNDS, invert_on_dark=False
+) -> Image.Image:
+    """Each small size zoomed, then every size at 1x, on light and dark tabs.
+
+    invert_on_dark draws black glyphs white on the dark row, as macOS does
+    with a template image.
+    """
+    pad = 16
+    zoomed = [s for s in sorted(icons) if s <= 48] or [min(icons)]
+    zoom_w = sum(s * PREVIEW_ZOOM + pad for s in zoomed)
+    actual_w = sum(s + pad for s in sorted(icons))
+    panel_w = max(zoom_w, actual_w) + pad
+    panel_h = pad + max(zoomed) * PREVIEW_ZOOM + pad + max(icons) + pad
+
+    sheet = Image.new("RGBA", (panel_w, panel_h * len(backgrounds)))
+    for row, colour in enumerate(backgrounds):
+        panel = Image.new("RGBA", (panel_w, panel_h), colour)
+        row_icons = icons
+        if invert_on_dark and sum(colour[:3]) < 384:
+            row_icons = {s: _tint(i, "#FFFFFF") for s, i in icons.items()}
+        x = pad
+        for s in zoomed:
+            big = row_icons[s].resize((s * PREVIEW_ZOOM,) * 2, Image.NEAREST)
+            panel.alpha_composite(big, (x, pad))
+            x += s * PREVIEW_ZOOM + pad
+        x, y = pad, pad + max(zoomed) * PREVIEW_ZOOM + pad
+        for s in sorted(icons):
+            panel.alpha_composite(row_icons[s], (x, y))
+            x += s + pad
+        sheet.paste(panel, (0, row * panel_h))
+    return sheet
+
+
+class _IconSet(BaseModel):
+    files: dict[int, Path]
+    ico: Path
+    preview: Path
+    warnings: list[str]
+
+
+def _export_icon_set(
+    img: Image.Image, out_dir: Path, sizes: list[int], resample: int, margin: float,
+    glyph: bool = False, template: bool = False,
+) -> _IconSet:
+    """Write icon-<size>.png for each size, favicon.ico and preview.png."""
+    square, warnings = _square_on_alpha(img, margin)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    render = (lambda s: _render_glyph(square, s)) if glyph else (
+        lambda s: square.resize((s, s), resample))
+    rendered = {s: render(s) for s in set(sizes) | set(ICO_SIZES)}
+    files = {}
+    for s in sorted(set(sizes)):
+        files[s] = out_dir / f"icon-{s}.png"
+        rendered[s].save(files[s])
+
+    # Hand Pillow each ICO size already rendered; left to itself it would
+    # resample them all from one image with its own filter.
+    ico = out_dir / "favicon.ico"
+    largest = max(ICO_SIZES)
+    rendered[largest].save(
+        ico, format="ICO", sizes=[(s, s) for s in ICO_SIZES],
+        append_images=[rendered[s] for s in ICO_SIZES if s != largest],
+    )
+
+    preview = out_dir / "preview.png"
+    shown = {s: rendered[s] for s in sorted(set(sizes))}
+    if glyph:
+        _preview_sheet(shown, MENU_BAR_BACKGROUNDS, invert_on_dark=template).save(preview)
+    else:
+        _preview_sheet(shown).save(preview)
+    return _IconSet(files=files, ico=ico, preview=preview, warnings=warnings)
+
+
+def _download(url: str) -> bytes:
+    with httpx.Client(timeout=_TIMEOUT, follow_redirects=True) as client:
+        r = client.get(url)
+        r.raise_for_status()
+        return r.content
+
+
+class IconResult(BaseModel):
+    """What generate_icon hands back."""
+
+    dir: str = Field(description="Folder holding everything below")
+    preview_path: str = Field(
+        description="Every size on light and dark tab colours, small ones zoomed 8x. "
+        "Read this first to judge the icon."
+    )
+    ico_path: str = Field(description="favicon.ico containing 16, 32 and 48")
+    files: dict[int, str] = Field(description="PNG path for each requested size")
+    source_path: str = Field(description="The full-size image the icon was made from")
+    cutout_path: str = Field(description="The source after background removal or pixel snapping")
+    style: str
+    native_size: int | None = Field(
+        default=None, description="pixel only: the sprite's own size in pixels"
+    )
+    palette: list[str] = Field(default_factory=list, description="pixel only: hex colours")
+    tints: dict[str, str] = Field(
+        default_factory=dict,
+        description="glyph only: tint name -> folder holding that colour's PNGs",
+    )
+    warnings: list[str] = Field(default_factory=list)
+
+
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -960,6 +1237,204 @@ def generate_3d(
         faces=len(mesh.faces),
         watertight=bool(mesh.is_watertight),
         bodies=int(bodies),
+        warnings=warnings,
+    )
+
+
+@mcp.tool()
+def generate_icon(
+    subject: str = "",
+    image_path: str = "",
+    style: str = "flat",
+    colours: str = "",
+    model: str = DEFAULT_MODEL,
+    sizes: list[int] | None = None,
+    margin: float = 0.06,
+    max_colors: int = 16,
+    tints: dict[str, str] | None = None,
+    reference_paths: list[str] | None = None,
+    save_dir: str = "",
+) -> IconResult:
+    """
+    Make a favicon / app icon set: transparent PNGs at every size, a
+    favicon.ico (16, 32, 48), and a preview sheet. Read preview_path to judge
+    it — it shows each size at 1x on Chrome's light and dark tab colours, with
+    the small ones zoomed 8x.
+
+    Either describe a subject and the image is generated for you, or pass
+    image_path to iconify an existing image (a logo, say). Give one or the other.
+
+    Styles:
+      flat  (default) A bold, flat-colour icon, cut out with BiRefNet and
+            downscaled smoothly. What most favicons look like.
+      pixel A pixel-art sprite, snapped to a true grid and palette-reduced by
+            fal-ai/image2pixel, then scaled with nearest-neighbour so pixels
+            stay crisp. image2pixel cleans up pixel art; it cannot make it, so
+            with image_path the input must already look like pixel art.
+      glyph A single-colour silhouette for the macOS menu bar (or anywhere a
+            monochrome icon is wanted). Generated black on white, then the
+            darkness becomes the alpha, so light details become holes. The
+            black PNGs work as macOS template images, which the system
+            recolours for light and dark menu bars. No background-removal
+            call, so with image_path no AWS is needed either. (flat and
+            pixel with image_path stage it to S3, so they do need AWS.)
+
+    Args:
+        subject:    What the icon shows, e.g. "BD-1, the droid from Star Wars
+                    Jedi: Fallen Order". Wrapped in a style-specific prompt that
+                    asks for bold shapes and no fine detail.
+        image_path: An existing image to iconify instead of generating one.
+        style:      "flat" (default), "pixel" or "glyph".
+        colours:    Optional colour hint, e.g. "white body with blue markings".
+        model:      Generator for the source image: "seedream" (default),
+                    "gpt-image" or "flux". Ignored with image_path.
+        sizes:      PNG sizes to write (default 16, 32, 48, 180, 192, 512; for
+                    glyph 16, 18, 22, 32, 36, 44).
+        margin:     Transparent padding on each side, as a fraction of the
+                    icon's longest side (default 0.06).
+        reference_paths: Images of the subject (up to 4) to draw it from. Use
+                    these for anything the model may not know by sight: asked
+                    for "BD-1" by name, Seedream drew a generic droid every
+                    time (2026-10-13). With references, the source comes from
+                    the edit endpoint instead and needs AWS for staging.
+        max_colors: pixel only: palette size (default 16).
+        tints:      glyph only: extra coloured copies, name -> "#RRGGBB", each
+                    written to its own subfolder. Apple's status colours are
+                    {"warn": "#FF9F0A", "down": "#FF453A"}. Tinted copies are
+                    not templates; mark only the black one as a template.
+        save_dir:   Parent folder (default ~/Pictures/falai-mcp/icons). Each run
+                    gets its own subfolder.
+    """
+    style = style.strip().lower()
+    if style not in ICON_STYLES:
+        raise ValueError(f"Unknown style {style!r}. Use one of: {', '.join(sorted(ICON_STYLES))}.")
+    if reference_paths and image_path:
+        raise ValueError("reference_paths is for generating; it does nothing with image_path.")
+    if bool(subject.strip()) == bool(image_path.strip()):
+        raise ValueError("Pass either subject (to generate) or image_path (to iconify), not both.")
+    sizes = sorted(set(sizes or (DEFAULT_GLYPH_SIZES if style == "glyph" else DEFAULT_ICON_SIZES)))
+    tints = tints or {}
+    if tints and style != "glyph":
+        raise ValueError("tints only applies to style='glyph'.")
+    _check_tint_names(tints)
+    if any(s <= 0 or s > 1024 for s in sizes):
+        raise ValueError(f"Sizes must be 1-1024 (got {sizes}).")
+    if not 0 <= margin < 0.5:
+        raise ValueError(f"margin must be 0 to 0.5 (got {margin}).")
+    # Everything that can fail without costing money fails here, before any
+    # folder is made or call is paid for.
+    if reference_paths and len(reference_paths) > MAX_INPUT_IMAGES:
+        raise ValueError(f"At most {MAX_INPUT_IMAGES} reference images.")
+    gen_url = _endpoint(EDIT_MODELS if reference_paths else GENERATE_MODELS, model, DEFAULT_MODEL)
+    for path in [image_path] if image_path else reference_paths or []:
+        if not Path(path).expanduser().is_file():
+            raise FileNotFoundError(f"No such image: {path}")
+
+    label = subject or Path(image_path).stem
+    slug = re.sub(r"[^\w\s-]", "", label)[:40].strip().replace(" ", "_") or "icon"
+    root = Path(save_dir).expanduser() if save_dir else DEFAULT_SAVE_DIR / "icons"
+    base = root / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{style}_{slug}"
+    out_dir, n = base, 1
+    while out_dir.exists():  # two runs in the same second must not share a folder
+        n += 1
+        out_dir = base.with_name(f"{base.name}_{n}")
+    out_dir.mkdir(parents=True)
+
+    def clean_up(source_url: str) -> dict:
+        cut = _call(BG_REMOVE_ENDPOINT, {
+            "image_url": source_url,
+            "model": "General Use (Heavy)",
+            "output_format": "png",
+        })
+        if style == "flat":
+            return cut
+        if not cut.get("image"):
+            raise RuntimeError(f"Background removal returned no image: {str(cut)[:300]}")
+        return _call(PIXELATE_ENDPOINT, {
+            "image_url": cut["image"]["url"],
+            "max_colors": max_colors,
+            "cleanup_jaggy": True,
+            "trim_borders": True,
+        })
+
+    source_path = out_dir / "source.png"
+    if image_path:
+        with Image.open(Path(image_path).expanduser()) as src:
+            src.save(source_path, format="PNG")
+    else:
+        hint = f", mainly {colours.strip()}" if colours.strip() else ""
+        prompt = ICON_PROMPTS[style].format(subject=subject.strip(), colours=hint)
+        payload = {"prompt": prompt, "image_size": "square_hd", "output_format": "png"}
+        if reference_paths:
+            payload["prompt"] = (
+                "Redraw the subject shown in the reference image, keeping its "
+                "distinctive shape, proportions and features, but in this style: "
+                + prompt
+            )
+            with _staged_urls(reference_paths, max_dimension=2048) as urls:
+                payload["image_urls"] = urls
+                generated = _call(gen_url, payload)
+        else:
+            generated = _call(gen_url, payload)
+        images = generated.get("images") or []
+        if not images:
+            raise RuntimeError("fal.ai returned no images.")
+        source_url = images[0]["url"]
+        source_path.write_bytes(_download(source_url))
+
+    cutout_path = out_dir / "cutout.png"
+    cleaned: dict = {}
+    if style == "glyph":
+        # Done locally: the source is already black on white.
+        with Image.open(source_path) as src:
+            _glyph_from_luminance(src).save(cutout_path)
+    else:
+        if image_path:
+            with _staged_urls([image_path], max_dimension=2048) as urls:
+                cleaned = clean_up(urls[0])
+        else:
+            # fal's own URL feeds straight into the clean-up step; no S3 needed.
+            cleaned = clean_up(source_url)
+        if style == "flat":
+            out_file = cleaned.get("image")
+        else:
+            # Unknown widths sort last, so they are never mistaken for native.
+            out_file = min(cleaned.get("images") or [None],
+                           key=lambda f: (f or {}).get("width") or float("inf"))
+        if not out_file:
+            raise RuntimeError(f"fal.ai returned no image from the clean-up step: {str(cleaned)[:300]}")
+        cutout_path.write_bytes(_download(out_file["url"]))
+
+    warnings: list[str] = []
+    native_size = None
+    with Image.open(cutout_path) as cutout:
+        cutout.load()
+        if style == "pixel":
+            native_size = _sprite_size(cutout)
+            # What actually gets scaled is the padded canvas, so judge that.
+            warnings += _pixel_size_warnings(max(_square_on_alpha(cutout, margin)[0].size), sizes)
+        resample = Image.NEAREST if style == "pixel" else Image.LANCZOS
+        is_glyph = style == "glyph"
+        icon_set = _export_icon_set(cutout, out_dir, sizes, resample, margin, is_glyph, is_glyph)
+        tint_dirs = {}
+        for name, colour in tints.items():
+            tint_dirs[name] = str(out_dir / name)
+            # Tinted copies are not templates: macOS shows their colour as-is.
+            _export_icon_set(_tint(cutout, colour), out_dir / name, sizes, resample, margin, True)
+    warnings += icon_set.warnings
+    warnings += _balance_warning()
+
+    return IconResult(
+        dir=str(out_dir),
+        preview_path=str(icon_set.preview),
+        ico_path=str(icon_set.ico),
+        files={s: str(p) for s, p in icon_set.files.items()},
+        source_path=str(source_path),
+        cutout_path=str(cutout_path),
+        style=style,
+        native_size=native_size,
+        palette=cleaned.get("palette") or [],
+        tints=tint_dirs,
         warnings=warnings,
     )
 

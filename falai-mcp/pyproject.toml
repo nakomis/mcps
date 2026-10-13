@@ -1,7 +1,7 @@
 [project]
 name = "falai-mcp"
 version = "0.1.0"
-description = "MCP server for hosted image generation and editing via fal.ai (Seedream, GPT Image, FLUX; Hunyuan3D and friends for 3D)"
+description = "MCP server for hosted image generation and editing via fal.ai (Seedream, GPT Image, FLUX; Hunyuan3D and friends for 3D; favicon, sprite and menu bar icon sets)"
 requires-python = ">=3.11"
 dependencies = [
     "mcp[cli]>=1.0.0,<2",
@@ -19,3 +19,8 @@ falai-mcp = "falai_mcp.server:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

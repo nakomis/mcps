@@ -12,6 +12,7 @@ app running locally and stopped working when it was uninstalled.
 | `edit_image` | `bytedance/seedream/v5/pro/edit` | Instruction-driven edits, up to 4 reference images |
 | `remove_object` | `fal-ai/object-removal` | Deleting something from a photo |
 | `generate_3d` | `fal-ai/hunyuan-3d/v3.1/pro/image-to-3d` | Image → GLB + print-ready STL |
+| `generate_icon` | Seedream + `fal-ai/birefnet/v2` / `fal-ai/image2pixel` | Favicon, app icon or menu bar glyph set |
 
 ## Choosing a model
 
@@ -172,6 +173,55 @@ The model ignores soft requests. "Remove the dog from the lawn" changed
 nothing. "Delete the golden retriever completely. The lawn must be entirely
 empty grass where the dog was" worked. Be explicit and state the required end
 state, not the action.
+
+## Icons
+
+`generate_icon` makes a set of icon files from a `subject` (generated) or an
+`image_path` (an existing logo, say): transparent PNGs at every size, a
+`favicon.ico` (16, 32, 48) and a `preview.png`. Each run gets its own folder
+under `~/Pictures/falai-mcp/icons/`. **Read the preview first**: it shows every
+size at 1× on light and dark backgrounds, with the small ones zoomed 8×,
+which is the only way to judge a 16px icon.
+
+| `style` | Pipeline | For |
+|---|---|---|
+| `flat` (default) | generate → BiRefNet cut-out → Lanczos downscale | Favicons and app icons |
+| `pixel` | generate → BiRefNet → image2pixel grid snap → nearest-neighbour | Retro sprites |
+| `glyph` | generate black on white → darkness becomes alpha → hairline fill → downscale | macOS menu bar, anything monochrome |
+
+Chrome draws a tab favicon at 16 CSS px, which is 32 physical on Retina, so
+the default sizes are 16, 32, 48, 180 (Apple touch), 192 and 512 (web
+manifest). Glyphs default to 16, 18, 22, 32, 36 and 44, the menu bar at 1×
+and 2×.
+
+What testing on BD-1 (2026-10-13) showed:
+
+- **Name recognition is not to be relied on.** Asked for "BD-1" by name,
+  Seedream drew a generic droid four times. Pass `reference_paths` (a photo
+  of the subject) and the source comes from the edit endpoint instead; it was
+  unmistakably BD-1 first time.
+- **Crop to the distinctive part.** A whole droid on two legs is a sliver at
+  16px. The head alone (boxy, antennae, lenses) read at every size.
+- **image2pixel tidies pixel art; it cannot make it.** It finds the grid the
+  image already has, and Seedream's "32x32 sprite" came back on 86, 97 and
+  257 pixel grids. None of those divide into 16 or 32, so small sizes are
+  nearest-neighbour downscales and look rough; the result warns.
+  image2pixel's own background removal flood-fills from the corners and left
+  a magenta slab behind on a faint gradient, so BiRefNet runs first. Its
+  response holds the snapped art at full size *and* at native size, in no
+  documented order; the smaller one is used.
+- **Thin cut-outs mottle glyphs.** White panel lines narrower than an output
+  pixel blend into grey speckle when downscaled. Each size is closed
+  (dilate, then erode) at 4× before the final downscale, which fills those
+  and keeps real holes such as lenses.
+
+### Menu bar glyphs
+
+The black PNGs are template images: flag them as such (`setTemplate`,
+`with_icon_as_template` in `tray-icon`, or a `Template` filename suffix) and
+macOS recolours them for light and dark menu bars. For status colours, pass
+`tints`, e.g. `{"warn": "#FF9F0A", "down": "#FF453A"}` (Apple's system orange
+and red); each tint gets its own subfolder. Tinted copies are not templates.
 
 ## Structured output
 
