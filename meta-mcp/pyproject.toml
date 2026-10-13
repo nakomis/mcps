@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Lazy-loading proxy MCP server — surfaces sub-MCPs on demand to keep Claude's context window small"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp[cli]>=1.0.0",
+    "mcp[cli]>=1.0.0,<2",
     "tomli>=2.0.0",
 ]
 

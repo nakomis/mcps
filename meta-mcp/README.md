@@ -60,6 +60,12 @@ Replace all your individual MCP entries in `~/.claude/settings.json` with a sing
 
 The sub-MCPs do not need entries in `settings.json` — they are managed entirely by meta-mcp.
 
+## Large results
+
+A `call_mcp` or `describe_mcp` result longer than 20,000 characters is not returned inline. It is written to an owner-only file under `$TMPDIR/meta-mcp/`, and the reply gives the path, the size and the first 2,000 characters, so the caller can read or grep just the part it needs. Files older than 7 days are pruned when meta-mcp starts. Override with `META_MCP_INLINE_LIMIT` (characters) and `META_MCP_SPILL_DIR`. If the file can't be written, the result is returned truncated to the inline limit instead.
+
+Sub-MCP replies up to 64 MiB are accepted. A longer one fails that call with an error and the sub-MCP is restarted. Each sub-MCP's stderr is drained continuously (logged at debug level; the last 50 lines are quoted if it exits unexpectedly).
+
 ## Sub-MCP compatibility
 
 Any MCP server that uses stdio transport (the default) works as a sub-MCP. The existing MCPs in this repo (`ollama-mcp`, `falai-mcp`, `tplink-deco-mcp`, etc.) are all compatible and remain independently installable for use without meta-mcp.

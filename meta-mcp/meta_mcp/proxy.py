@@ -6,12 +6,22 @@ Keeps the subprocess alive between calls.
 """
 
 import asyncio
+import collections
 import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Each JSON-RPC reply is one line on stdout. asyncio's default StreamReader limit
+# is 64 KiB, and readline() raises "Separator is not found, and chunk exceed the
+# limit" for any longer line (cadcraft's list_commands is ~126 KB). Allow far
+# more; server.py keeps oversized results out of the caller's context.
+_STREAM_LIMIT = 64 * 1024 * 1024
+
+# stderr lines kept per sub-MCP, quoted when it dies unexpectedly.
+_STDERR_TAIL_LINES = 50
 
 _next_id = 0
 
@@ -40,6 +50,15 @@ class SubMcp:
     # hanging the loser forever. So every _send/_notify holds this lock: at most
     # one in-flight request per sub-MCP, callers queue instead of colliding.
     _io_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # stderr must be drained continuously: an unread pipe fills (~64 KiB), the
+    # sub-MCP blocks on its next log write, and the call awaiting its stdout
+    # hangs forever. The drain task logs each line and keeps a short tail.
+    _stderr_task: asyncio.Task | None = field(default=None, init=False, repr=False)
+    _stderr_tail: collections.deque = field(
+        default_factory=lambda: collections.deque(maxlen=_STDERR_TAIL_LINES),
+        init=False,
+        repr=False,
+    )
 
     async def _send(self, method: str, params: dict | None = None) -> Any:
         msg = {"jsonrpc": "2.0", "id": _id(), "method": method}
@@ -51,9 +70,27 @@ class SubMcp:
             await self.process.stdin.drain()
 
             while True:
-                raw = await self.process.stdout.readline()
+                try:
+                    raw = await self.process.stdout.readline()
+                except ValueError:
+                    # A reply line beyond _STREAM_LIMIT. Its tail is still in the
+                    # pipe and would surface as garbage in later reads, so restart
+                    # the sub-MCP rather than try to resynchronise.
+                    await self._kill()
+                    raise RuntimeError(
+                        f"sub-MCP '{self.name}' sent a reply longer than "
+                        f"{_STREAM_LIMIT:,} bytes; it has been restarted"
+                    )
                 if not raw:
-                    raise RuntimeError(f"sub-MCP '{self.name}' closed stdout unexpectedly")
+                    self.initialised = False
+                    if self._stderr_task:
+                        # Let the drain task catch the dying process's last words.
+                        await asyncio.wait([self._stderr_task], timeout=1.0)
+                    tail = "\n".join(self._stderr_tail)
+                    raise RuntimeError(
+                        f"sub-MCP '{self.name}' closed stdout unexpectedly"
+                        + (f"; last stderr:\n{tail}" if tail else "")
+                    )
                 try:
                     response = json.loads(raw)
                 except json.JSONDecodeError:
@@ -80,6 +117,11 @@ class SubMcp:
                 await self._initialise()
 
     async def _spawn(self) -> None:
+        if self._stderr_task:
+            # A previous process's drain task must not append its last lines to
+            # the new process's tail.
+            self._stderr_task.cancel()
+            self._stderr_task = None
         logger.info("Spawning sub-MCP '%s': %s", self.name, self.command)
         import os
         env = {**os.environ, **self.env} if self.env else None
@@ -89,8 +131,34 @@ class SubMcp:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            limit=_STREAM_LIMIT,
         )
+        self._stderr_tail = collections.deque(maxlen=_STDERR_TAIL_LINES)
+        self._stderr_task = asyncio.create_task(self._drain_stderr(self.process.stderr))
         self.initialised = False
+
+    async def _kill(self) -> None:
+        self.initialised = False
+        if self.process and self.process.returncode is None:
+            try:
+                self.process.kill()
+            except ProcessLookupError:
+                pass
+            await self.process.wait()
+
+    async def _drain_stderr(self, stream: asyncio.StreamReader) -> None:
+        tail = self._stderr_tail  # this process's own tail, even after a respawn
+        while True:
+            try:
+                raw = await stream.readline()
+            except ValueError:
+                # A single line beyond _STREAM_LIMIT: the buffer was discarded; carry on.
+                continue
+            if not raw:
+                return
+            line = raw.decode(errors="replace").rstrip()
+            tail.append(line)
+            logger.debug("[%s] %s", self.name, line)
 
     async def _initialise(self) -> None:
         await self._send(
@@ -124,3 +192,6 @@ class SubMcp:
                     self.process.kill()
                 except ProcessLookupError:
                     pass
+        if self._stderr_task:
+            self._stderr_task.cancel()
+            self._stderr_task = None
