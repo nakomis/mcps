@@ -10,8 +10,11 @@ Exposes three tools to Claude Code:
 import asyncio
 import json
 import logging
+import os
 import signal
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 import tomli
@@ -22,6 +25,14 @@ from .proxy import SubMcp
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path(__file__).parent.parent / "config.toml"
+
+# Results longer than INLINE_LIMIT characters are written to a file under
+# SPILL_DIR and replaced by a short note with the path and a preview, so one big
+# sub-MCP reply (a command catalogue, a base64 image) can't flood the caller's
+# context. The caller reads or greps the file for the part it needs.
+INLINE_LIMIT = int(os.environ.get("META_MCP_INLINE_LIMIT", "20000"))
+PREVIEW_CHARS = 2000
+SPILL_DIR = Path(os.environ.get("META_MCP_SPILL_DIR", Path(tempfile.gettempdir()) / "meta-mcp"))
 
 mcp = FastMCP("meta-mcp")
 
@@ -45,6 +56,20 @@ def _load_config() -> None:
             command=entry["command"],
             env=entry.get("env", {}),
         )
+
+
+def _spill_if_large(text: str, name: str, tool: str) -> str:
+    if len(text) <= INLINE_LIMIT:
+        return text
+    SPILL_DIR.mkdir(parents=True, exist_ok=True)
+    safe_tool = "".join(c if c.isalnum() or c in "-_" else "_" for c in tool)
+    path = SPILL_DIR / f"{name}-{safe_tool}-{time.strftime('%Y%m%d-%H%M%S')}-{time.monotonic_ns()}.json"
+    path.write_text(text)
+    return (
+        f"Result too large to return inline ({len(text):,} characters). "
+        f"Full result written to {path} — read or grep that file for what you need.\n"
+        f"First {PREVIEW_CHARS:,} characters:\n{text[:PREVIEW_CHARS]}"
+    )
 
 
 async def _shutdown_all() -> None:
@@ -88,7 +113,7 @@ async def describe_mcp(name: str) -> str:
         return f"Failed to connect to sub-MCP '{name}': {exc}"
     if not tools:
         return f"Sub-MCP '{name}' reports no tools."
-    return json.dumps(tools, indent=2)
+    return _spill_if_large(json.dumps(tools, indent=2), name, "describe_mcp")
 
 
 @mcp.tool()
@@ -107,7 +132,8 @@ async def call_mcp(name: str, tool: str, args: dict) -> str:
         return f"Error calling '{tool}' on sub-MCP '{name}': {exc}"
     if result is None:
         return "(no result)"
-    return json.dumps(result) if not isinstance(result, str) else result
+    text = json.dumps(result) if not isinstance(result, str) else result
+    return _spill_if_large(text, name, tool)
 
 
 def main() -> None:

@@ -6,12 +6,22 @@ Keeps the subprocess alive between calls.
 """
 
 import asyncio
+import collections
 import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Each JSON-RPC reply is one line on stdout. asyncio's default StreamReader limit
+# is 64 KiB, and readline() raises "Separator is not found, and chunk exceed the
+# limit" for any longer line (cadcraft's list_commands is ~126 KB). Allow far
+# more; server.py keeps oversized results out of the caller's context.
+_STREAM_LIMIT = 64 * 1024 * 1024
+
+# stderr lines kept per sub-MCP, quoted when it dies unexpectedly.
+_STDERR_TAIL_LINES = 50
 
 _next_id = 0
 
@@ -40,6 +50,13 @@ class SubMcp:
     # hanging the loser forever. So every _send/_notify holds this lock: at most
     # one in-flight request per sub-MCP, callers queue instead of colliding.
     _io_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # stderr must be drained continuously: an unread pipe fills (~64 KiB), the
+    # sub-MCP blocks on its next log write, and the call awaiting its stdout
+    # hangs forever. The drain task logs each line and keeps a short tail.
+    _stderr_task: asyncio.Task | None = None
+    _stderr_tail: collections.deque = field(
+        default_factory=lambda: collections.deque(maxlen=_STDERR_TAIL_LINES)
+    )
 
     async def _send(self, method: str, params: dict | None = None) -> Any:
         msg = {"jsonrpc": "2.0", "id": _id(), "method": method}
@@ -53,7 +70,11 @@ class SubMcp:
             while True:
                 raw = await self.process.stdout.readline()
                 if not raw:
-                    raise RuntimeError(f"sub-MCP '{self.name}' closed stdout unexpectedly")
+                    tail = "\n".join(self._stderr_tail)
+                    raise RuntimeError(
+                        f"sub-MCP '{self.name}' closed stdout unexpectedly"
+                        + (f"; last stderr:\n{tail}" if tail else "")
+                    )
                 try:
                     response = json.loads(raw)
                 except json.JSONDecodeError:
@@ -89,8 +110,24 @@ class SubMcp:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            limit=_STREAM_LIMIT,
         )
+        self._stderr_tail.clear()
+        self._stderr_task = asyncio.create_task(self._drain_stderr(self.process.stderr))
         self.initialised = False
+
+    async def _drain_stderr(self, stream: asyncio.StreamReader) -> None:
+        while True:
+            try:
+                raw = await stream.readline()
+            except ValueError:
+                # A single line beyond _STREAM_LIMIT: the buffer was discarded; carry on.
+                continue
+            if not raw:
+                return
+            line = raw.decode(errors="replace").rstrip()
+            self._stderr_tail.append(line)
+            logger.debug("[%s] %s", self.name, line)
 
     async def _initialise(self) -> None:
         await self._send(
@@ -124,3 +161,6 @@ class SubMcp:
                     self.process.kill()
                 except ProcessLookupError:
                     pass
+        if self._stderr_task:
+            self._stderr_task.cancel()
+            self._stderr_task = None
