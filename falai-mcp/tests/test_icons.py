@@ -159,3 +159,60 @@ def test_glyph_render_fills_hairline_cutouts_but_keeps_big_holes():
     assert small.size == (40, 40)
     assert min(small.getpixel((x, 10))[3] for x in range(40)) > 200  # hairline gone
     assert small.getpixel((20, 25))[3] < 30  # 10px hole survives
+
+
+def test_glyph_from_transparent_logo_keeps_transparency():
+    from falai_mcp.server import _glyph_from_luminance
+
+    # A logo with alpha: transparent pixels are RGB black, which must not
+    # become ink.
+    logo = Image.new("RGBA", (20, 20), (0, 0, 0, 0))
+    logo.paste((10, 10, 10, 255), (5, 5, 15, 15))
+
+    alpha = _glyph_from_luminance(logo).getchannel("A")
+
+    assert alpha.getpixel((0, 0)) == 0
+    assert alpha.getpixel((10, 10)) == 255
+
+
+def test_tint_names_must_be_safe_folder_names():
+    from falai_mcp.server import _check_tint_names
+
+    _check_tint_names({"warn": "#FF9F0A", "down-2": "#FF453A"})
+    for bad in ["../x", "", "a/b", "icon-16.png", "preview"]:
+        try:
+            _check_tint_names({bad: "#000000"})
+        except ValueError:
+            continue
+        raise AssertionError(f"accepted {bad!r}")
+
+
+def test_pixel_native_size_ignores_margin():
+    from falai_mcp.server import _sprite_size
+
+    sprite = _sprite(canvas=(64, 64), box=(10, 10, 42, 42))  # 32x32 content
+    assert _sprite_size(sprite) == 32
+
+
+def test_generate_icon_rejects_bad_arguments_before_paying_or_writing(tmp_path, monkeypatch):
+    import falai_mcp.server as server
+
+    def no_calls(*_a, **_k):
+        raise AssertionError("fal.ai was called")
+
+    monkeypatch.setattr(server, "_call", no_calls)
+    cases = [
+        dict(subject="x", model="nope"),
+        dict(subject="x", style="glyph", tints={"../up": "#000000"}),
+        dict(subject="x", reference_paths=[str(tmp_path / "missing.png")]),
+        dict(image_path=str(tmp_path / "missing.png")),
+        dict(subject="x", reference_paths=["a"] * 5),
+    ]
+    for kwargs in cases:
+        try:
+            server.generate_icon(save_dir=str(tmp_path / "out"), **kwargs)
+        except (ValueError, FileNotFoundError):
+            pass
+        else:
+            raise AssertionError(f"accepted {kwargs}")
+    assert not (tmp_path / "out").exists()

@@ -732,6 +732,12 @@ def _square_on_alpha(img: Image.Image, margin: float) -> tuple[Image.Image, list
 
 def _glyph_from_luminance(img: Image.Image) -> Image.Image:
     """Black glyph whose alpha is the source's darkness: ink opaque, paper gone."""
+    if "A" in img.getbands() or img.mode == "P":
+        # A transparent logo's empty pixels are usually RGB black: flatten
+        # onto white first, or they would all become ink.
+        flat = Image.new("RGBA", img.size, (255, 255, 255, 255))
+        flat.alpha_composite(img.convert("RGBA"))
+        img = flat
     lum = img.convert("L")
     span = GLYPH_PAPER - GLYPH_INK
     alpha = lum.point(lambda v: 255 if v <= GLYPH_INK else 0 if v >= GLYPH_PAPER
@@ -769,13 +775,33 @@ def _tint(img: Image.Image, colour: str) -> Image.Image:
     return tinted
 
 
+# Files a run writes into its own folder, which a tint subfolder must not shadow.
+_RUN_FILES = {"source", "cutout", "preview", "favicon"}
+
+
+def _check_tint_names(tints: dict[str, str]) -> None:
+    """Tint names become folder names, so keep them to plain words."""
+    for name, colour in tints.items():
+        if not re.fullmatch(r"[\w-]+", name) or name in _RUN_FILES or name.startswith("icon-"):
+            raise ValueError(
+                f"Tint name {name!r} must be letters, digits, - or _, and not one "
+                f"of {sorted(_RUN_FILES)} or icon-*."
+            )
+        _tint(Image.new("RGBA", (1, 1)), colour)
+
+
+def _sprite_size(img: Image.Image) -> int:
+    """A pixel sprite's own size: its visible content, before any margin."""
+    return max(_square_on_alpha(img, 0.0)[0].size)
+
+
 def _pixel_size_warnings(native: int, sizes: list[int]) -> list[str]:
     """Sizes a pixel sprite cannot be scaled to without dropping pixels."""
     uneven = [s for s in sizes if s % native]
     if not uneven:
         return []
     return [
-        f"The sprite is {native}x{native}, so sizes {', '.join(map(str, uneven))} "
+        f"The sprite canvas is {native}x{native} (margin included), so sizes {', '.join(map(str, uneven))} "
         "are not whole multiples of it: nearest-neighbour scaling drops or doubles "
         "some pixels there. Check them in the preview."
     ]
@@ -799,16 +825,17 @@ def _preview_sheet(
     sheet = Image.new("RGBA", (panel_w, panel_h * len(backgrounds)))
     for row, colour in enumerate(backgrounds):
         panel = Image.new("RGBA", (panel_w, panel_h), colour)
+        row_icons = icons
         if invert_on_dark and sum(colour[:3]) < 384:
-            icons = {s: _tint(i, "#FFFFFF") for s, i in icons.items()}
+            row_icons = {s: _tint(i, "#FFFFFF") for s, i in icons.items()}
         x = pad
         for s in zoomed:
-            big = icons[s].resize((s * PREVIEW_ZOOM,) * 2, Image.NEAREST)
+            big = row_icons[s].resize((s * PREVIEW_ZOOM,) * 2, Image.NEAREST)
             panel.alpha_composite(big, (x, pad))
             x += s * PREVIEW_ZOOM + pad
         x, y = pad, pad + max(zoomed) * PREVIEW_ZOOM + pad
         for s in sorted(icons):
-            panel.alpha_composite(icons[s], (x, y))
+            panel.alpha_composite(row_icons[s], (x, y))
             x += s + pad
         sheet.paste(panel, (0, row * panel_h))
     return sheet
@@ -1249,7 +1276,8 @@ def generate_icon(
             darkness becomes the alpha, so light details become holes. The
             black PNGs work as macOS template images, which the system
             recolours for light and dark menu bars. No background-removal
-            call, so with image_path no AWS is needed either.
+            call, so with image_path no AWS is needed either. (flat and
+            pixel with image_path stage it to S3, so they do need AWS.)
 
     Args:
         subject:    What the icon shows, e.g. "BD-1, the droid from Star Wars
@@ -1288,18 +1316,29 @@ def generate_icon(
     tints = tints or {}
     if tints and style != "glyph":
         raise ValueError("tints only applies to style='glyph'.")
-    for colour in tints.values():
-        _tint(Image.new("RGBA", (1, 1)), colour)  # validate before paying for anything
+    _check_tint_names(tints)
     if any(s <= 0 or s > 1024 for s in sizes):
         raise ValueError(f"Sizes must be 1-1024 (got {sizes}).")
     if not 0 <= margin < 0.5:
         raise ValueError(f"margin must be 0 to 0.5 (got {margin}).")
+    # Everything that can fail without costing money fails here, before any
+    # folder is made or call is paid for.
+    if reference_paths and len(reference_paths) > MAX_INPUT_IMAGES:
+        raise ValueError(f"At most {MAX_INPUT_IMAGES} reference images.")
+    gen_url = _endpoint(EDIT_MODELS if reference_paths else GENERATE_MODELS, model, DEFAULT_MODEL)
+    for path in [image_path] if image_path else reference_paths or []:
+        if not Path(path).expanduser().is_file():
+            raise FileNotFoundError(f"No such image: {path}")
 
     label = subject or Path(image_path).stem
     slug = re.sub(r"[^\w\s-]", "", label)[:40].strip().replace(" ", "_") or "icon"
     root = Path(save_dir).expanduser() if save_dir else DEFAULT_SAVE_DIR / "icons"
-    out_dir = root / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{style}_{slug}"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    base = root / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{style}_{slug}"
+    out_dir, n = base, 1
+    while out_dir.exists():  # two runs in the same second must not share a folder
+        n += 1
+        out_dir = base.with_name(f"{base.name}_{n}")
+    out_dir.mkdir(parents=True)
 
     def clean_up(source_url: str) -> dict:
         cut = _call(BG_REMOVE_ENDPOINT, {
@@ -1320,14 +1359,13 @@ def generate_icon(
 
     source_path = out_dir / "source.png"
     if image_path:
-        source_path.write_bytes(_read_image(image_path, 0)[0])
+        with Image.open(Path(image_path).expanduser()) as src:
+            src.save(source_path, format="PNG")
     else:
         hint = f", mainly {colours.strip()}" if colours.strip() else ""
         prompt = ICON_PROMPTS[style].format(subject=subject.strip(), colours=hint)
         payload = {"prompt": prompt, "image_size": "square_hd", "output_format": "png"}
         if reference_paths:
-            if len(reference_paths) > MAX_INPUT_IMAGES:
-                raise ValueError(f"At most {MAX_INPUT_IMAGES} reference images.")
             payload["prompt"] = (
                 "Redraw the subject shown in the reference image, keeping its "
                 "distinctive shape, proportions and features, but in this style: "
@@ -1335,9 +1373,9 @@ def generate_icon(
             )
             with _staged_urls(reference_paths, max_dimension=2048) as urls:
                 payload["image_urls"] = urls
-                generated = _call(_endpoint(EDIT_MODELS, model, DEFAULT_MODEL), payload)
+                generated = _call(gen_url, payload)
         else:
-            generated = _call(_endpoint(GENERATE_MODELS, model, DEFAULT_MODEL), payload)
+            generated = _call(gen_url, payload)
         images = generated.get("images") or []
         if not images:
             raise RuntimeError("fal.ai returned no images.")
@@ -1360,7 +1398,9 @@ def generate_icon(
         if style == "flat":
             out_file = cleaned.get("image")
         else:
-            out_file = min(cleaned.get("images") or [None], key=lambda f: (f or {}).get("width") or 0)
+            # Unknown widths sort last, so they are never mistaken for native.
+            out_file = min(cleaned.get("images") or [None],
+                           key=lambda f: (f or {}).get("width") or float("inf"))
         if not out_file:
             raise RuntimeError(f"fal.ai returned no image from the clean-up step: {str(cleaned)[:300]}")
         cutout_path.write_bytes(_download(out_file["url"]))
@@ -1370,8 +1410,9 @@ def generate_icon(
     with Image.open(cutout_path) as cutout:
         cutout.load()
         if style == "pixel":
-            native_size = max(_square_on_alpha(cutout, margin)[0].size)
-            warnings += _pixel_size_warnings(native_size, sizes)
+            native_size = _sprite_size(cutout)
+            # What actually gets scaled is the padded canvas, so judge that.
+            warnings += _pixel_size_warnings(max(_square_on_alpha(cutout, margin)[0].size), sizes)
         resample = Image.NEAREST if style == "pixel" else Image.LANCZOS
         is_glyph = style == "glyph"
         icon_set = _export_icon_set(cutout, out_dir, sizes, resample, margin, is_glyph, is_glyph)
