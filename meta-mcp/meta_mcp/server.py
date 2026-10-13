@@ -30,8 +30,17 @@ CONFIG_PATH = Path(__file__).parent.parent / "config.toml"
 # SPILL_DIR and replaced by a short note with the path and a preview, so one big
 # sub-MCP reply (a command catalogue, a base64 image) can't flood the caller's
 # context. The caller reads or greps the file for the part it needs.
-INLINE_LIMIT = int(os.environ.get("META_MCP_INLINE_LIMIT", "20000"))
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except ValueError:
+        logger.warning("Ignoring non-integer %s; using %d", name, default)
+        return default
+
+
+INLINE_LIMIT = _int_env("META_MCP_INLINE_LIMIT", 20000)
 PREVIEW_CHARS = 2000
+SPILL_MAX_AGE_DAYS = 7
 SPILL_DIR = Path(os.environ.get("META_MCP_SPILL_DIR", Path(tempfile.gettempdir()) / "meta-mcp"))
 
 mcp = FastMCP("meta-mcp")
@@ -61,15 +70,37 @@ def _load_config() -> None:
 def _spill_if_large(text: str, name: str, tool: str) -> str:
     if len(text) <= INLINE_LIMIT:
         return text
-    SPILL_DIR.mkdir(parents=True, exist_ok=True)
     safe_tool = "".join(c if c.isalnum() or c in "-_" else "_" for c in tool)
-    path = SPILL_DIR / f"{name}-{safe_tool}-{time.strftime('%Y%m%d-%H%M%S')}-{time.monotonic_ns()}.json"
-    path.write_text(text)
+    ext = "json" if text[:1] in "[{" else "txt"
+    path = SPILL_DIR / f"{name}-{safe_tool}-{time.strftime('%Y%m%d-%H%M%S')}-{time.monotonic_ns()}.{ext}"
+    try:
+        # Results can hold private data (mail, tickets, images): owner-only.
+        SPILL_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+    except OSError as exc:
+        logger.warning("Could not spill %s/%s result to %s: %s", name, tool, path, exc)
+        return (
+            f"Result too large to return inline ({len(text):,} characters) and could not be "
+            f"written to {SPILL_DIR} ({exc}). Truncated to the first {INLINE_LIMIT:,} characters:\n"
+            f"{text[:INLINE_LIMIT]}"
+        )
     return (
         f"Result too large to return inline ({len(text):,} characters). "
         f"Full result written to {path} — read or grep that file for what you need.\n"
         f"First {PREVIEW_CHARS:,} characters:\n{text[:PREVIEW_CHARS]}"
     )
+
+
+def _prune_spill_dir() -> None:
+    cutoff = time.time() - SPILL_MAX_AGE_DAYS * 86400
+    try:
+        for path in SPILL_DIR.iterdir():
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink()
+    except OSError:
+        pass
 
 
 async def _shutdown_all() -> None:
@@ -139,6 +170,7 @@ async def call_mcp(name: str, tool: str, args: dict) -> str:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     _load_config()
+    _prune_spill_dir()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.call_soon(lambda: _install_shutdown_handler())
