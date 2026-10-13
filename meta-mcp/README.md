@@ -68,4 +68,4 @@ Sub-MCP replies up to 64 MiB are accepted. A longer one fails that call with an 
 
 ## Sub-MCP compatibility
 
-Any MCP server that uses stdio transport (the default) works as a sub-MCP. The existing MCPs in this repo (`ollama-mcp`, `falai-mcp`, `tplink-deco-mcp`, etc.) are all compatible and remain independently installable for use without meta-mcp.
+Any MCP server that uses stdio transport (the default) works as a sub-MCP. The existing MCPs in this repo (`ollama-mcp`, `falai-mcp`, `trello-mcp`, etc.) are all compatible and remain independently installable for use without meta-mcp.
