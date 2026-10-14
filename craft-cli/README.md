@@ -14,20 +14,26 @@ craft-cli-update --dry-run  # just say what would change
 For every `/Applications/*Craft.app` signed as `ai.storyteller.*`, the script:
 
 1. reads the app's version and downloads the matching CLI from the app's GitHub release;
-2. checks the CLI is notarised and signed by the same team as the apps (`DJ6XS33FX8`, Learning Machines LLC), and refuses to install it otherwise;
-3. unpacks it to `~/.local/share/craft-cli/<app>/<app>-cli-<ver>-macos-universal/`, points `~/.local/bin/<app>-cli` at it and removes older versions.
+2. requires the zip to hold exactly one `<app>-cli-<ver>-macos-universal/` folder containing the binary;
+3. checks the binary is signed by the apps' team (`codesign --verify` against `DJ6XS33FX8`, Learning Machines LLC) and notarised (`spctl`), and refuses to install it otherwise;
+4. moves it to `~/.local/share/craft-cli/<app>/<app>-cli-<ver>-macos-universal/` and atomically repoints `~/.local/bin/<app>-cli` at it;
+5. keeps the version it replaced, since a running sub-MCP may still be using it, and deletes anything older.
 
-It exits non-zero if any app's CLI couldn't be fetched or verified. It also notes any app that has no `[[mcps]]` entry in `meta-mcp/config.toml` yet. Afterwards, run `/mcp` in Claude Code so meta-mcp respawns the sub-MCPs on the new binaries.
+`~/.local/share/craft-cli/<app>/` belongs to the script: anything else in it is deleted. A failure for one app (no download, unexpected zip layout, wrong signer) is reported. That app's existing install and link are left as they were, and the script moves on to the next app. It exits non-zero if any app failed. It also notes any app that has no `[[mcps]]` entry in `meta-mcp/config.toml` yet.
+
+Afterwards, run `/mcp` in Claude Code so meta-mcp respawns the sub-MCPs on the new binaries.
 
 ## Install
 
+From the repo root (`~/.local/bin` must be on your `PATH`):
+
 ```sh
-ln -s "$PWD/craft-cli-update" ~/.local/bin/craft-cli-update
+ln -s "$PWD/craft-cli/craft-cli-update" ~/.local/bin/craft-cli-update
 ```
 
 ## meta-mcp entries
 
-All four run headless over stdio. PhotoCraft, EffectCraft and PdfCraft can confine file access to a directory. CADCraft has no such option.
+These are the four installed here. Every app's CLI runs headless over stdio. PhotoCraft, EffectCraft and PdfCraft can confine file access to a directory. CADCraft has no such option.
 
 ```toml
 [[mcps]]
