@@ -5,15 +5,21 @@
 # The apps update themselves; their CLIs are a separate release asset
 # (<app>-cli-<ver>-macos-universal.zip) and don't. For every /Applications/*Craft.app
 # this downloads the CLI matching the app's version into
-# ~/.local/share/craft-cli/<app>/, checks it is notarised by the same team as
-# the apps, points ~/.local/bin/<app>-cli at it and removes older versions.
+# ~/.local/share/craft-cli/<app>/, checks it is notarised and signed by the
+# same team as the apps, points ~/.local/bin/<app>-cli at it and removes
+# versions older than the one it replaced.
+#
+# ~/.local/share/craft-cli/<app>/ belongs to this script: anything else in it
+# is deleted.
 #
 # Usage: craft-cli-update [--dry-run]
 # Afterwards run /mcp in Claude Code so meta-mcp respawns the sub-MCPs.
 
-set -euo pipefail
+set -uo pipefail
 
 TEAM_ID="DJ6XS33FX8"   # Learning Machines LLC, who sign the Craft apps
+# Valid Developer ID signature from that team, checked by codesign itself.
+REQUIREMENT="anchor apple generic and certificate leaf[subject.OU] = \"$TEAM_ID\""
 SHARE="$HOME/.local/share/craft-cli"
 BIN="$HOME/.local/bin"
 CONFIG="$HOME/repos/nakomis/mcps/meta-mcp/config.toml"
@@ -25,22 +31,105 @@ case "${1:-}" in
   *) echo "usage: $(basename "$0") [--dry-run]" >&2; exit 2 ;;
 esac
 
+tmp=""
+cleanup() { [ -n "$tmp" ] && rm -rf "$tmp"; tmp=""; }
+trap cleanup EXIT
+
+fail() { echo "  ! $*" >&2; return 1; }
+
+# Install the CLI for one app. Returns non-zero (with a message) on any failure,
+# leaving the existing link and install untouched.
+install_cli() {
+  local app=$1 version=$2
+  local cli="$app-cli"
+  local dir_name="$cli-$version-macos-universal"
+  local app_dir="$SHARE/$app"
+  local final="$app_dir/$dir_name"
+  local target="$final/$cli"
+  local url="https://github.com/storytold/$app/releases/download/v$version/$dir_name.zip"
+
+  cleanup
+  tmp=$(mktemp -d) || fail "could not create a temporary directory" || return 1
+
+  curl -fsSL --proto '=https' --retry 2 --connect-timeout 20 --max-time 600 \
+    -o "$tmp/cli.zip" "$url" || fail "no CLI download at $url" || return 1
+  unzip -q "$tmp/cli.zip" -d "$tmp/x" || fail "could not unzip $url" || return 1
+
+  # The release zips hold one top-level <app>-cli-<ver>-macos-universal/ folder.
+  # Anything else and we don't know what we'd be installing.
+  local staged="$tmp/x/$dir_name"
+  [ -f "$staged/$cli" ] && [ "$(ls -A "$tmp/x")" = "$dir_name" ] \
+    || fail "unexpected zip layout (wanted $dir_name/$cli and nothing else)" || return 1
+  chmod +x "$staged/$cli"
+
+  codesign --verify --strict -R="$REQUIREMENT" "$staged/$cli" 2>/dev/null \
+    || fail "$cli is not signed by team $TEAM_ID; not installed" || return 1
+  spctl -a -t install "$staged/$cli" 2>/dev/null \
+    || fail "$cli is not notarised; not installed" || return 1
+
+  [ ! -L "$app_dir" ] || fail "$app_dir is a symlink; refusing to write through it" || return 1
+  if [ -e "$BIN/$cli" ] && [ ! -L "$BIN/$cli" ]; then
+    fail "$BIN/$cli exists and isn't a symlink; refusing to replace it" || return 1
+  fi
+  mkdir -p "$app_dir" "$BIN" || fail "could not create $app_dir or $BIN" || return 1
+
+  # Move into place under a staging name, then rename over any old copy of
+  # this version, so the directory the link points at is never missing.
+  local incoming="$app_dir/.incoming-$dir_name"
+  rm -rf "$incoming"
+  mv "$staged" "$incoming" || fail "could not move the CLI into $app_dir" || return 1
+  if [ -d "$final" ]; then
+    rm -rf "$app_dir/.old-$dir_name"
+    mv "$final" "$app_dir/.old-$dir_name" || fail "could not set aside $final" || return 1
+  fi
+  mv "$incoming" "$final" || fail "could not move the CLI into $final" || return 1
+  rm -rf "$app_dir/.old-$dir_name"
+
+  # Atomic relink: rename a new symlink over the old one.
+  local previous
+  previous=$(readlink "$BIN/$cli" 2>/dev/null || true)
+  ln -sfn "$target" "$BIN/.$cli.new" && mv -f "$BIN/.$cli.new" "$BIN/$cli" \
+    || fail "could not link $BIN/$cli" || return 1
+
+  # Keep the version just replaced (a running sub-MCP may still be using it
+  # until meta-mcp respawns); remove anything older.
+  local keep_prev="" entry
+  case "$previous" in "$app_dir"/*) keep_prev=${previous#"$app_dir"/}; keep_prev=${keep_prev%%/*} ;; esac
+  for entry in "$app_dir"/* "$app_dir"/.[!.]*; do
+    [ -e "$entry" ] || continue
+    case "$(basename "$entry")" in
+      "$dir_name"|"$keep_prev") ;;
+      *) rm -rf "$entry" ;;
+    esac
+  done
+
+  echo "  installed $("$BIN/$cli" --version 2>/dev/null | head -1 || echo "$cli $version")"
+  cleanup
+}
+
 updated=0
 failed=0
 
 for app_path in /Applications/*Craft.app; do
   [ -d "$app_path" ] || continue
-  bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Contents/Info.plist" 2>/dev/null || true)
+  plist="$app_path/Contents/Info.plist"
+  bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist" 2>/dev/null || true)
   case "$bundle_id" in
     ai.storyteller.*) ;;
     *) continue ;;
   esac
   app=${bundle_id#ai.storyteller.}          # e.g. photocraft (also the GitHub repo name)
-  version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Contents/Info.plist")
-  cli="$app-cli"
-  dir_name="$cli-$version-macos-universal"
-  target="$SHARE/$app/$dir_name/$cli"
+  version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist" 2>/dev/null || true)
 
+  # Both end up in rm -rf paths and the download URL: be strict.
+  if ! [[ "$app" =~ ^[a-z0-9]+$ ]] || ! [[ "$version" =~ ^[0-9][0-9A-Za-z.+-]*$ ]]; then
+    echo "$(basename "$app_path"): unexpected bundle id or version ('$bundle_id' '$version'); skipped" >&2
+    failed=$((failed + 1))
+    continue
+  fi
+
+  cli="$app-cli"
+  target="$SHARE/$app/$cli-$version-macos-universal/$cli"
   current=$(readlink "$BIN/$cli" 2>/dev/null || true)
   if [ "$current" = "$target" ] && [ -x "$target" ]; then
     echo "$app $version: up to date"
@@ -48,51 +137,26 @@ for app_path in /Applications/*Craft.app; do
   fi
 
   if [ -n "$current" ]; then was=$(basename "$(dirname "$current")"); else was="not installed"; fi
-  echo "$app $version: CLI is $was, fetching $version"
   if $dry_run; then
+    echo "$app $version: CLI is $was, would fetch $version"
     continue
   fi
+  echo "$app $version: CLI is $was, fetching $version"
 
-  url="https://github.com/storytold/$app/releases/download/v$version/$dir_name.zip"
-  tmp=$(mktemp -d)
-  if ! curl -fsSL -o "$tmp/cli.zip" "$url"; then
-    echo "  ! no CLI download at $url" >&2
-    rm -rf "$tmp"; failed=$((failed + 1)); continue
-  fi
-  unzip -q "$tmp/cli.zip" -d "$tmp/x"
-  bin_path=$(find "$tmp/x" -type f -name "$cli" | head -1)
-  if [ -z "$bin_path" ]; then
-    echo "  ! $cli not found in the zip" >&2
-    rm -rf "$tmp"; failed=$((failed + 1)); continue
-  fi
-
-  # Same signer as the apps, and notarised by Apple.
-  team=$(codesign -dv "$bin_path" 2>&1 | sed -n 's/^TeamIdentifier=//p')
-  if [ "$team" != "$TEAM_ID" ] || ! spctl -a -t install "$bin_path" 2>/dev/null; then
-    echo "  ! $cli failed signature checks (team '${team:-none}'); not installed" >&2
-    rm -rf "$tmp"; failed=$((failed + 1)); continue
-  fi
-
-  mkdir -p "$SHARE/$app" "$BIN"
-  rm -rf "${SHARE:?}/$app/$dir_name"
-  mv "$(dirname "$bin_path")" "$SHARE/$app/$dir_name"
-  rm -rf "$tmp"
-  ln -sfn "$target" "$BIN/$cli"
-
-  # Running sub-MCPs keep their (unlinked) binary until meta-mcp respawns them.
-  for old in "$SHARE/$app"/*; do
-    [ "$old" = "$SHARE/$app/$dir_name" ] || rm -rf "$old"
-  done
-
-  echo "  installed $("$BIN/$cli" --version 2>/dev/null | head -1 || echo "$cli $version")"
-  updated=$((updated + 1))
-
-  if [ -f "$CONFIG" ] && ! grep -q "^name = \"$app\"" "$CONFIG"; then
-    echo "  note: no [[mcps]] entry for '$app' in $CONFIG yet"
+  if install_cli "$app" "$version"; then
+    updated=$((updated + 1))
+    if [ -f "$CONFIG" ] && ! grep -q "^name *= *\"$app\"" "$CONFIG"; then
+      echo "  note: no [[mcps]] entry for '$app' in $CONFIG yet"
+    fi
+  else
+    failed=$((failed + 1))
   fi
 done
 
 if [ "$updated" -gt 0 ]; then
   echo "Updated $updated CLI(s). Run /mcp in Claude Code to reconnect meta-mcp."
 fi
-[ "$failed" -eq 0 ]
+if [ "$failed" -gt 0 ]; then
+  echo "$failed app(s) failed." >&2
+  exit 1
+fi
