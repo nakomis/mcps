@@ -1,0 +1,98 @@
+#!/bin/bash
+# Bring each ArtCraft "Crafting App" CLI (the MCP servers meta-mcp runs) in
+# line with the desktop app installed in /Applications.
+#
+# The apps update themselves; their CLIs are a separate release asset
+# (<app>-cli-<ver>-macos-universal.zip) and don't. For every /Applications/*Craft.app
+# this downloads the CLI matching the app's version into
+# ~/.local/share/craft-cli/<app>/, checks it is notarised by the same team as
+# the apps, points ~/.local/bin/<app>-cli at it and removes older versions.
+#
+# Usage: craft-cli-update [--dry-run]
+# Afterwards run /mcp in Claude Code so meta-mcp respawns the sub-MCPs.
+
+set -euo pipefail
+
+TEAM_ID="DJ6XS33FX8"   # Learning Machines LLC, who sign the Craft apps
+SHARE="$HOME/.local/share/craft-cli"
+BIN="$HOME/.local/bin"
+CONFIG="$HOME/repos/nakomis/mcps/meta-mcp/config.toml"
+
+dry_run=false
+case "${1:-}" in
+  --dry-run) dry_run=true ;;
+  "") ;;
+  *) echo "usage: $(basename "$0") [--dry-run]" >&2; exit 2 ;;
+esac
+
+updated=0
+failed=0
+
+for app_path in /Applications/*Craft.app; do
+  [ -d "$app_path" ] || continue
+  bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Contents/Info.plist" 2>/dev/null || true)
+  case "$bundle_id" in
+    ai.storyteller.*) ;;
+    *) continue ;;
+  esac
+  app=${bundle_id#ai.storyteller.}          # e.g. photocraft (also the GitHub repo name)
+  version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Contents/Info.plist")
+  cli="$app-cli"
+  dir_name="$cli-$version-macos-universal"
+  target="$SHARE/$app/$dir_name/$cli"
+
+  current=$(readlink "$BIN/$cli" 2>/dev/null || true)
+  if [ "$current" = "$target" ] && [ -x "$target" ]; then
+    echo "$app $version: up to date"
+    continue
+  fi
+
+  if [ -n "$current" ]; then was=$(basename "$(dirname "$current")"); else was="not installed"; fi
+  echo "$app $version: CLI is $was, fetching $version"
+  if $dry_run; then
+    continue
+  fi
+
+  url="https://github.com/storytold/$app/releases/download/v$version/$dir_name.zip"
+  tmp=$(mktemp -d)
+  if ! curl -fsSL -o "$tmp/cli.zip" "$url"; then
+    echo "  ! no CLI download at $url" >&2
+    rm -rf "$tmp"; failed=$((failed + 1)); continue
+  fi
+  unzip -q "$tmp/cli.zip" -d "$tmp/x"
+  bin_path=$(find "$tmp/x" -type f -name "$cli" | head -1)
+  if [ -z "$bin_path" ]; then
+    echo "  ! $cli not found in the zip" >&2
+    rm -rf "$tmp"; failed=$((failed + 1)); continue
+  fi
+
+  # Same signer as the apps, and notarised by Apple.
+  team=$(codesign -dv "$bin_path" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+  if [ "$team" != "$TEAM_ID" ] || ! spctl -a -t install "$bin_path" 2>/dev/null; then
+    echo "  ! $cli failed signature checks (team '${team:-none}'); not installed" >&2
+    rm -rf "$tmp"; failed=$((failed + 1)); continue
+  fi
+
+  mkdir -p "$SHARE/$app" "$BIN"
+  rm -rf "${SHARE:?}/$app/$dir_name"
+  mv "$(dirname "$bin_path")" "$SHARE/$app/$dir_name"
+  rm -rf "$tmp"
+  ln -sfn "$target" "$BIN/$cli"
+
+  # Running sub-MCPs keep their (unlinked) binary until meta-mcp respawns them.
+  for old in "$SHARE/$app"/*; do
+    [ "$old" = "$SHARE/$app/$dir_name" ] || rm -rf "$old"
+  done
+
+  echo "  installed $("$BIN/$cli" --version 2>/dev/null | head -1 || echo "$cli $version")"
+  updated=$((updated + 1))
+
+  if [ -f "$CONFIG" ] && ! grep -q "^name = \"$app\"" "$CONFIG"; then
+    echo "  note: no [[mcps]] entry for '$app' in $CONFIG yet"
+  fi
+done
+
+if [ "$updated" -gt 0 ]; then
+  echo "Updated $updated CLI(s). Run /mcp in Claude Code to reconnect meta-mcp."
+fi
+[ "$failed" -eq 0 ]

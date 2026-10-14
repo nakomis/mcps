@@ -18,6 +18,7 @@ If you find this useful, please consider buying me a coffee:
 | [falai-mcp](falai-mcp/) | Image generation, editing, and object removal via fal.ai FLUX.2 |
 | [alexa-mcp](alexa-mcp/) | Alexa announcements and speech on named Echos, via an alexapy Lambda |
 | [screeneye](screeneye/) | An iPhone camera pointed at a screen: snapshot, crop, zoom and focus, found over Bonjour |
+| [craft-cli](craft-cli/) | Keeps the ArtCraft Crafting Apps' MCP CLIs (PhotoCraft, CADCraft, …) matched to the installed apps |
 
 ## Infrastructure
 
