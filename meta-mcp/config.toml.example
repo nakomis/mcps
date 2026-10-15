@@ -28,3 +28,16 @@ description = "Alexa announcements and speech on the Echos"
 command = ["uv", "--directory", "/path/to/mcps/alexa-mcp", "run", "alexa-mcp"]
 # Defaults to prod (profile nakom.is). Set ALEXA_AWS_PROFILE = "nakom.is-sandbox" for sandbox.
 env = {ALEXA_DEFAULT_DEVICES = "Martin's Kitchen Echo Dot,Martin's Echo Show,Bedroom Echo"}
+
+# Blender, through the "MCP for Blender" add-on (github.com/ahujasid/blender-mcp).
+# Install the add-on from the SAME release as the pinned server: its addon.py,
+# as <Blender support dir>/<version>/scripts/addons/blender_mcp.py. Then, in
+# Blender, enable it (Preferences > Add-ons) and click Start MCP Server (3D view,
+# N panel > MCP for Blender). It listens on localhost:9876 with no auth, and
+# execute_blender_code runs any Python: save the .blend first.
+# Tested: 2.1.1 with Blender 4.5 (mu), 2.1.9 with Blender 5.2 (phi).
+[[mcps]]
+name = "blender"
+description = "drive Blender: scenes, objects, materials, Python"
+command = ["uvx", "mcp-for-blender==2.1.9"]
+env = {DISABLE_TELEMETRY = "true"}
