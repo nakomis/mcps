@@ -18,8 +18,9 @@ final class HostFinder {
         guard browser == nil else { return }
         let b = NWBrowser(for: .bonjourWithTXTRecord(type: "_screeneye-host._tcp", domain: nil), using: .tcp)
         b.browseResultsChangedHandler = { [weak self] results, _ in
+            var seen = Set<String>()  // one result per interface: keep the first of each name
             let found: [Host] = results.compactMap { r in
-                guard case let .service(name, _, _, _) = r.endpoint else { return nil }
+                guard case let .service(name, _, _, _) = r.endpoint, seen.insert(name).inserted else { return nil }
                 var path: String?
                 if case let .bonjour(txt) = r.metadata { path = txt["path"] }
                 return Host(name: name, endpoint: r.endpoint, path: path)
@@ -64,7 +65,7 @@ final class HostFinder {
                         cont.resume(throwing: SaveError.noHost)
                     }
                     conn.cancel()
-                case .failed, .waiting:
+                case .failed:  // .waiting may recover (Mac waking, permission prompt): leave it to the timeout
                     if once.claim() { cont.resume(throwing: SaveError.noHost) }
                     conn.cancel()
                 default: break
@@ -120,10 +121,13 @@ final class Saver {
                 let url = try await finder.framesURL(manual: manualURL)
                 let saved = try await Uploader.post(to: url, jpeg: jpeg, meta: meta) { fraction in
                     Task { @MainActor in
-                        if case .saving = self.state { self.state = .saving(fraction) }
+                        // These tasks can run out of order: never move the bar backwards.
+                        if case .saving(let shown) = self.state, fraction > shown { self.state = .saving(fraction) }
                     }
                 }
                 state = .saved(saved.name)
+            } catch let error as URLError where error.code == .appTransportSecurityRequiresSecureConnection {
+                state = .failed("Plain http only works for local hosts (.local names or IP addresses). Use https, or a local address.")
             } catch {
                 state = .failed(error.localizedDescription)
             }

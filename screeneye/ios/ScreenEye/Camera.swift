@@ -30,6 +30,12 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
     private var zoomObservation: NSKeyValueObservation?
     /// The last focus point set through `/set?focus=`, if any (camera queue).
     private var focusPoint: CGPoint?
+    /// The latest on-screen zoom not yet written to the device (guarded by `lock`), so a burst
+    /// of pinch or slider events becomes one write per trip through the camera queue.
+    @ObservationIgnored private var pendingZoom: Double?
+    /// On-screen zoom writes queued but not finished (main thread). While any are, KVO values
+    /// are stale echoes of earlier writes, so they're ignored rather than snapping the UI back.
+    @ObservationIgnored private var localZoomWrites = 0
 
     func start() {
         AVCaptureDevice.requestAccess(for: .video) { ok in
@@ -60,7 +66,7 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
             DispatchQueue.main.async {
                 guard let self else { return }
                 (self.minZoom, self.maxZoom) = range
-                self.zoom = z
+                if self.localZoomWrites == 0 { self.zoom = z }
             }
         }
     }
@@ -76,12 +82,31 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
 
     /// Zoom from the on-screen controls (multiples of the 1x lens), clamped to the device's range
     /// exactly as `/set?zoom=` is.
+    /// Call on the main thread.
     func setZoom(_ z: Double) {
         zoom = ZoomMath.clamp(z, minZoom, maxZoom)
+        lock.lock()
+        let alreadyQueued = pendingZoom != nil
+        pendingZoom = z
+        lock.unlock()
+        guard !alreadyQueued else { return }
+        localZoomWrites += 1
         queue.async {
-            guard let d = self.device, (try? d.lockForConfiguration()) != nil else { return }
-            self.setZoomFactor(d, z)
-            d.unlockForConfiguration()
+            self.lock.lock()
+            let target = self.pendingZoom
+            self.pendingZoom = nil
+            self.lock.unlock()
+            var actual: Double?
+            if let d = self.device, let target, (try? d.lockForConfiguration()) != nil {
+                self.setZoomFactor(d, target)
+                d.unlockForConfiguration()
+                actual = Double(d.videoZoomFactor / self.oneX)
+            }
+            // Posted after this write's KVO echo, so the UI settles on what the device really did.
+            DispatchQueue.main.async {
+                self.localZoomWrites -= 1
+                if self.localZoomWrites == 0, let actual { self.zoom = actual }
+            }
         }
     }
 
@@ -133,24 +158,29 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
     /// for pushing to the host. Blocks briefly on the camera queue, so call it off the main thread.
     func frameForSaving(note: String?, device name: String) -> (Data, FrameMeta)? {
         let taken = FrameMeta.timestamp(Date())
-        let meta: FrameMeta? = queue.sync {
-            guard let d = device else { return nil }
-            return FrameMeta(
+        // Take the frame and the state together on the camera queue, so they match; encode after.
+        let captured: (CIImage, FrameMeta)? = queue.sync {
+            lock.lock(); let img = latest; lock.unlock()
+            guard let d = device, let img else { return nil }
+            return (img, FrameMeta(
                 zoom: FrameMeta.round(Double(d.videoZoomFactor / oneX), 2),
                 lens: d.activePrimaryConstituent?.localizedName ?? "?",
                 ev: FrameMeta.round(Double(d.exposureTargetBias), 2),
                 focus: focusPoint.map { [FrameMeta.round($0.x, 3), FrameMeta.round($0.y, 3)] },
                 lensPosition: FrameMeta.round(Double(d.lensPosition), 3),
-                note: note, device: name, taken: taken)
+                note: note, device: name, taken: taken))
         }
-        guard let meta, let jpeg = snapshot() else { return nil }
+        guard let (img, meta) = captured, let jpeg = jpeg(img) else { return nil }
         return (jpeg, meta)
     }
 
     private func snapshot() -> Data? {
         lock.lock(); let img = latest; lock.unlock()
-        guard let img else { return nil }
-        return ciContext.jpegRepresentation(of: img, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
+        return img.flatMap(jpeg)
+    }
+
+    private func jpeg(_ img: CIImage) -> Data? {
+        ciContext.jpegRepresentation(of: img, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
                                             options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.92])
     }
 

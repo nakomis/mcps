@@ -10,7 +10,7 @@ struct ContentView: View {
     @State private var saver = Saver()
     @State private var note = ""
     @State private var showSettings = false
-    @State private var pinchStart: Double?
+    @GestureState private var pinchStart: Double?
     @AppStorage(hostURLKey) private var hostURL = ""
     @FocusState private var noteFocused: Bool
 
@@ -53,13 +53,12 @@ struct ContentView: View {
     // MARK: Zoom
 
     private var pinch: some Gesture {
+        // The zoom when the pinch began; @GestureState resets it even if the pinch is cancelled.
         MagnifyGesture()
-            .onChanged { value in
-                let start = pinchStart ?? camera.zoom
-                pinchStart = start
-                camera.setZoom(start * value.magnification)
+            .updating($pinchStart) { value, start, _ in
+                if start == nil { start = camera.zoom }
+                camera.setZoom((start ?? camera.zoom) * value.magnification)
             }
-            .onEnded { _ in pinchStart = nil }
     }
 
     private var sliderPosition: Binding<Double> {
@@ -180,7 +179,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Host address")
                 } footer: {
-                    Text("Used when no host is found over Bonjour. Frames are posted to /api/frames on it.")
+                    Text("Used when no host is found over Bonjour. Frames are posted to /api/frames on it. Plain http works only for .local names and IP addresses.")
                 }
             }
             .navigationTitle("Settings")
