@@ -134,7 +134,7 @@ app's Save button pushes and files them on the share:
 
 | Endpoint | Does |
 |---|---|
-| `POST /api/frames` | `multipart/form-data`: `image` (`image/jpeg`) and `meta` (a JSON object: zoom, lens, ev, focus, lensPosition, note, device, taken, orientation, rotation). Turns the frame upright by `rotation` (clockwise; missing means 0, anything but 0/90/180/270 is a 400), keeping the JPEG's quality tables. Writes `screeneye/YYYY-MM-DD/HHMMSS[-note].jpg` and a `.json` sidecar (the meta, plus `received`, `client`, `bytes` (of the file written), `rotated_deg`, `name`), never overwriting (`-2`, `-3`, ...). Replies `201 {"name", "path"}` or `{"error"}` with 4xx/5xx; non-JPEGs get 415, anything over 30 MiB 413 |
+| `POST /api/frames` | `multipart/form-data`: `image` (`image/jpeg`) and `meta` (a JSON object: zoom, lens, ev, focus, lensPosition, note, device, taken, orientation, rotation). Turns the frame upright by `rotation` (clockwise; missing means 0, anything but 0/90/180/270 is a 400), keeping the JPEG's quality tables. Writes `screeneye/YYYY-MM-DD/HHMMSS[-note].jpg` and a `.json` sidecar (the meta, plus `received`, `client`, `bytes` (of the file written), `rotated_deg`, `name`; the meta's `rotation` is kept as the phone sent it, and the saved image has already been turned by `rotated_deg`), never overwriting (`-2`, `-3`, ...). Replies `201 {"name", "path"}` or `{"error"}` with 4xx/5xx; non-JPEGs get 415, anything over 30 MiB 413 |
 | `GET /health` | `{"ok": true, "root", "writable"}` |
 
 It listens on port 8090 and is advertised by the host's Avahi as

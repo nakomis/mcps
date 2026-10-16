@@ -58,9 +58,12 @@ enum OrientationMath {
         // clockwise in the picture: landscapeLeft 0, portrait 90, landscapeRight 180, upside-down 270.
         let angle = normalise(atan2(gy, gx) * 180 / .pi + 180)
         let nearest = Int((angle / 90).rounded()) % 4 * 90
-        if let current = previous.orientation.ownRotation, current != nearest,
+        // The rotation in force: after lying flat, the one kept from before.
+        let inForce = previous.orientation.ownRotation ?? (previous.orientation.isFlat ? previous.rotation : nil)
+        if let current = inForce, current != nearest,
            distance(angle, Double(current)) < 45 + hysteresisDegrees {
-            return previous  // still within the dead band around the current orientation
+            // Still within the dead band around the current orientation.
+            return OrientationState(orientation: orientation(forRotation: current), rotation: current)
         }
         return OrientationState(orientation: orientation(forRotation: nearest), rotation: nearest)
     }

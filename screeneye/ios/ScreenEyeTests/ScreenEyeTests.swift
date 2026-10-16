@@ -199,6 +199,9 @@ final class OrientationTests: XCTestCase {
         XCTAssertEqual(at(50, from: OrientationState()).orientation, .portrait)  // no previous: nearest
         XCTAssertEqual(at(-50, from: left), left)
         XCTAssertEqual(at(-56, from: left).orientation, .portraitUpsideDown)
+        // Standing up from flat near the diagonal keeps the rotation from before it lay down.
+        let flat = state(0, 0, -1, from: left)
+        XCTAssertEqual(at(50, from: flat), left)
     }
 
     func testEveryAngleSnapsToAQuarterTurn() {
