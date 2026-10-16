@@ -108,20 +108,26 @@ def _browse(timeout: float) -> str | None:
     try:
         found = _Found()
         browser = ServiceBrowser(zc, _SERVICE, found)
-        deadline = time.monotonic() + timeout
-        tried: set[str] = set()
-        while time.monotonic() < deadline:
-            found.event.wait(max(deadline - time.monotonic(), 0))
-            found.event.clear()
-            for name in [n for n in found.names if n not in tried]:
-                tried.add(name)
-                info = zc.get_service_info(_SERVICE, name, timeout=3000)
-                v4 = [a for a in info.parsed_addresses() if ":" not in a] if info else []
-                if v4:
-                    return f"http://{v4[0]}:{info.port}"
-        return None
+        try:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                # With a name that hasn't resolved yet, look again shortly
+                # rather than wait for the next announcement.
+                pause = deadline - time.monotonic()
+                found.event.wait(max(min(pause, 0.5) if found.names else pause, 0))
+                found.event.clear()
+                # Every name, every time round: one that didn't resolve yet
+                # (the phone has only just announced itself) is tried again.
+                for name in dict.fromkeys(found.names):
+                    wait = min(3000, max(int((deadline - time.monotonic()) * 1000), 1))
+                    info = zc.get_service_info(_SERVICE, name, timeout=wait)
+                    v4 = [a for a in info.parsed_addresses() if ":" not in a] if info else []
+                    if v4:
+                        return f"http://{v4[0]}:{info.port}"
+            return None
+        finally:
+            browser.cancel()
     finally:
-        browser.cancel()
         zc.close()
 
 

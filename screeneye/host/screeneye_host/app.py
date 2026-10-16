@@ -11,6 +11,9 @@ on the share.
                      {"error"} with a 4xx/5xx.
   GET  /health       {"ok": true, ...}
 
+There is no authentication: it is for a trusted LAN only, and should never be
+published beyond it.
+
 Environment variables:
   SCREENEYE_ROOT       The share's mount point (default /mnt/print-recordings)
   SCREENEYE_HOST_PORT  Port to listen on (default 8090)
@@ -26,6 +29,7 @@ from datetime import datetime
 from pathlib import Path
 
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -72,10 +76,15 @@ def save_frame(root: Path, image: bytes, sidecar: dict, note: str | None,
         except FileExistsError:
             continue
         break
-    # Only the request that won the JPEG's name writes this sidecar.
-    with open(meta, "x", encoding="utf-8") as f:
-        json.dump({**sidecar, "name": jpg.name}, f, indent=2, ensure_ascii=False)
-        f.write("\n")
+    # Only the request that won the JPEG's name writes this sidecar. If it
+    # can't, take the JPEG back out, so a retry doesn't leave an orphan.
+    try:
+        with open(meta, "x", encoding="utf-8") as f:
+            json.dump({**sidecar, "name": jpg.name}, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+    except BaseException:
+        jpg.unlink(missing_ok=True)
+        raise
     return jpg
 
 
@@ -144,7 +153,8 @@ async def post_frame(request: Request) -> JSONResponse:
     }
     note = meta.get("note") if isinstance(meta.get("note"), str) else None
     try:
-        jpg = save_frame(cfg.root, image, sidecar, note, now)
+        # Off the event loop: up to 30 MiB to a CIFS share would stall /health.
+        jpg = await run_in_threadpool(save_frame, cfg.root, image, sidecar, note, now)
     except OSError as e:
         log.exception("could not save frame")
         return _error(503, f"could not save the frame: {e.strerror or e}")

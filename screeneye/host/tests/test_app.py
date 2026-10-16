@@ -134,3 +134,19 @@ def test_rejects_malformed_multipart(client):
     r = client.post("/api/frames", content=b"--x\r\nnonsense",
                     headers={"content-type": "multipart/form-data; boundary=x"})
     assert r.status_code == 400 and "error" in r.json()
+
+
+def test_failed_sidecar_removes_the_jpeg(tmp_path, monkeypatch):
+    import builtins
+
+    real_open = builtins.open
+
+    def failing_open(path, mode="r", *a, **kw):
+        if str(path).endswith(".json") and "x" in mode:
+            raise OSError(28, "No space left on device")
+        return real_open(path, mode, *a, **kw)
+
+    monkeypatch.setattr(builtins, "open", failing_open)
+    with pytest.raises(OSError):
+        save_frame(tmp_path, JPEG, {}, None, datetime(2026, 10, 16, 1, 2, 3))
+    assert list((tmp_path / "screeneye" / "2026-10-16").iterdir()) == []

@@ -88,7 +88,8 @@ It listens on port 8090 and is advertised by the host's Avahi as
 `_screeneye-host._tcp`, TXT `path=/api/frames`
 ([`host/screeneye-host.service`](host/screeneye-host.service)). Settings:
 `SCREENEYE_ROOT` (the share, default `/mnt/print-recordings`),
-`SCREENEYE_HOST_PORT`, `SCREENEYE_MAX_BYTES`.
+`SCREENEYE_HOST_PORT`, `SCREENEYE_MAX_BYTES`. It has no authentication: it is
+for the home LAN only, and nothing publishes it beyond that.
 
 The image holds both packages. Build it from this directory:
 
