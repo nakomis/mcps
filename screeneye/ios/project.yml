@@ -14,6 +14,7 @@ targets:
         DEVELOPMENT_TEAM: 62YFUFBSFX
         CODE_SIGN_STYLE: Automatic
         TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_NSCameraUsageDescription: "ScreenEye points the camera at a screen so Claude can read it."
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: "ScreenEye serves camera snapshots to your Mac on the local network, and saves frames to it."
