@@ -276,8 +276,8 @@ def set_camera(
     pan: [x, y], the centre of the view as fractions of the lens's whole
         frame ([0.5, 0.5] recentres). Only moves anything when zoomed past
         the lens; it's kept inside the frame.
-    focus_x, focus_y: focus/exposure point, 0..1 across the picture snapshot
-        returns ((0,0) top-left).
+    focus_x, focus_y: focus/exposure point, 0..1 across the zoomed view (the
+        picture snapshot returns without full_frame; (0,0) top-left).
     upright: pan and focus are in the upright frame, as snapshot shows it
         (the default); false means the raw sensor frame.
     lock: true locks focus where it is; false returns to continuous autofocus.

@@ -327,6 +327,16 @@ final class ViewportTests: XCTestCase {
         XCTAssertEqual(v.rect, CGRect(x: 0, y: 0, width: 1, height: 1))
     }
 
+    func testAFrameFromAnotherLensIsCroppedForItsOwnZoom() {
+        let v = ViewportMath.make(zoom: 8, center: CGPoint(x: 0.5, y: 0.5), lenses: lenses, min: 0.5, max: 60)
+        XCTAssertEqual(v.rect(forFrameAt: 4), v.rect)  // its own lens
+        // Just switched up from the 2x lens: that frame needs a quarter-size crop, not a half.
+        XCTAssertEqual(v.rect(forFrameAt: 2), CGRect(x: 0.375, y: 0.375, width: 0.25, height: 0.25))
+        // A frame zoomed in further than asked (just switched down) is used whole.
+        let down = ViewportMath.make(zoom: 1.5, center: CGPoint(x: 0.5, y: 0.5), lenses: lenses, min: 0.5, max: 60)
+        XCTAssertEqual(down.rect(forFrameAt: 4), CGRect(x: 0, y: 0, width: 1, height: 1))
+    }
+
     func testFramePoint() {
         let v = Viewport(zoom: 8, optical: 2, center: CGPoint(x: 0.5, y: 0.25))  // quarter-size crop
         let p = v.framePoint(CGPoint(x: 0, y: 1))

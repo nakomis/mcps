@@ -54,6 +54,17 @@ struct Viewport: Equatable, Sendable {
         return CGRect(x: center.x - s / 2, y: center.y - s / 2, width: s, height: s)
     }
 
+    /// The visible region in a frame taken at another lens step (frames from the old lens
+    /// still arrive for a moment after a switch). The lens zooms about the centre, so the same
+    /// scene is a crop of `zoom / optical` of it; a frame zoomed in further than asked is used
+    /// whole.
+    func rect(forFrameAt frameOptical: Double) -> CGRect {
+        guard frameOptical > 0, frameOptical != optical else { return rect }
+        var v = Viewport(zoom: zoom, optical: frameOptical, center: center)
+        v.center = ViewportMath.clampCenter(center, digital: v.digital)
+        return v.rect
+    }
+
     /// A point in the picture (fractions of the visible region), in the lens's frame.
     func framePoint(_ p: CGPoint) -> CGPoint {
         let r = rect

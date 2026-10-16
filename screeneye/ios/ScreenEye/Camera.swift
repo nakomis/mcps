@@ -41,9 +41,18 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
     private let orientation = OrientationTracker()
     private let output = AVCaptureVideoDataOutput()
     private let queue = DispatchQueue(label: "camera")
-    /// Guards `latest`, `view`, `lenses` and `zoomRange`.
+    /// Guards `latest`, `latestOptical`, `view`, `lenses`, `zoomRange` and the lens fields.
     private let lock = NSLock()
     private var latest: CIImage?
+    /// The lens step `latest` was taken at.
+    @ObservationIgnored private var latestOptical = 1.0
+    /// The lens step last set on the device, the one before, and when: frames keep coming from
+    /// the old lens for a moment after a switch.
+    @ObservationIgnored private var appliedOptical = 1.0
+    @ObservationIgnored private var previousOptical = 1.0
+    @ObservationIgnored private var lensMovedAt = Date.distantPast
+    /// How long after a lens switch frames are taken to still be from the old lens.
+    static let lensSettle: TimeInterval = 0.3
     @ObservationIgnored private var view = Viewport()
     /// Lens steps (multiples of the 1x lens) the device can zoom to at full quality.
     @ObservationIgnored private var lenses: [Double] = [1]
@@ -94,14 +103,22 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
         lenses = steps.isEmpty ? [range.0] : steps
         zoomRange = range
         lock.unlock()
-        setView(zoom: Double(dev.videoZoomFactor) / oneX, center: nil)
-        moveLens()  // onto a lens step, whatever the device started at
+        let start = setView(zoom: Double(dev.videoZoomFactor) / oneX, center: nil)
+        lock.lock()
+        // Whatever the device started at, frames are taken as at this step; moveLens puts it there.
+        (appliedOptical, previousOptical) = (start.optical, start.optical)
+        lock.unlock()
+        moveLens(attempt: 1)
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let img = CIImage(cvPixelBuffer: pb)
-        lock.lock(); latest = img; let digital = view.digital; lock.unlock()
+        lock.lock()
+        latest = img
+        latestOptical = Date().timeIntervalSince(lensMovedAt) < Self.lensSettle ? previousOptical : appliedOptical
+        let digital = view.digital
+        lock.unlock()
         let e = img.extent
         let aspect = e.height > 0 ? Double(e.width / e.height) : 16.0 / 9.0
         if aspect != lastAspect {
@@ -145,12 +162,26 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
     func setZoom(_ z: Double) { setView(zoom: z, center: nil) }
 
     /// Puts the lens at the current step (camera queue). Reads the step when it runs, so a burst
-    /// of changes ends on the last.
-    private func moveLens() {
-        lock.lock(); let optical = view.optical; lock.unlock()
-        guard let d = device, (try? d.lockForConfiguration()) != nil else { return }
-        d.videoZoomFactor = ZoomMath.clamp(CGFloat(optical) * oneXFactor, d.minAvailableVideoZoomFactor, d.maxAvailableVideoZoomFactor)
+    /// of changes ends on the last; does nothing if it's already there. If the device can't be
+    /// locked, tries again shortly rather than leave the lens and the viewport disagreeing.
+    private func moveLens(attempt: Int = 0) {
+        lock.lock(); let optical = view.optical; let applied = appliedOptical; lock.unlock()
+        guard let d = device else { return }
+        let factor = ZoomMath.clamp(CGFloat(optical) * oneXFactor, d.minAvailableVideoZoomFactor, d.maxAvailableVideoZoomFactor)
+        if optical == applied && d.videoZoomFactor == factor { return }
+        guard (try? d.lockForConfiguration()) != nil else {
+            if attempt < 20 { queue.asyncAfter(deadline: .now() + 0.1) { self.moveLens(attempt: attempt + 1) } }
+            return
+        }
+        d.videoZoomFactor = factor
         d.unlockForConfiguration()
+        lock.lock()
+        if optical != appliedOptical {
+            previousOptical = appliedOptical
+            appliedOptical = optical
+            lensMovedAt = Date()
+        }
+        lock.unlock()
     }
 
     /// Copies the view state to the main-thread mirrors.
@@ -184,6 +215,7 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
         let pan = Self.point(q["pan"]).map { FrameMath.raw($0, rotation: rotation) }
         let zoom = q["zoom"].flatMap(Double.init)
         let v = (zoom != nil || pan != nil) ? setView(zoom: zoom, center: pan) : currentView
+        moveLens()  // now, so focus is set on the lens the picture comes from
         do {
             try d.lockForConfiguration()
             defer { d.unlockForConfiguration() }
@@ -268,10 +300,11 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
         let taken = FrameMeta.timestamp(Date())
         // Take the frame and the state together on the camera queue, so they match; encode after.
         let captured: (CIImage, FrameMeta)? = queue.sync {
-            lock.lock(); let img = latest; let v = view; lock.unlock()
+            lock.lock(); let img = latest; let v = view; let frameOptical = latestOptical; lock.unlock()
             guard let d = device, let img else { return nil }
             let o = orientation.state
-            return (Self.crop(img, to: v.rect), FrameMeta(
+            let rect = v.rect(forFrameAt: frameOptical)
+            return (Self.crop(img, to: rect), FrameMeta(
                 zoom: FrameMeta.round(v.zoom, 2),
                 lens: d.activePrimaryConstituent?.localizedName ?? "?",
                 ev: FrameMeta.round(Double(d.exposureTargetBias), 2),
@@ -279,9 +312,9 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
                 lensPosition: FrameMeta.round(Double(d.lensPosition), 3),
                 note: note, device: name, taken: taken,
                 orientation: o.orientation.rawValue, rotation: o.rotation,
-                opticalZoom: FrameMeta.round(v.optical, 2),
+                opticalZoom: FrameMeta.round(frameOptical, 2),
                 frame: [Int(img.extent.width), Int(img.extent.height)],
-                crop: Self.rounded(v.rect)))
+                crop: Self.rounded(rect)))
         }
         guard let (img, meta) = captured, let jpeg = jpeg(img) else { return nil }
         return (jpeg, meta)
@@ -290,12 +323,13 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
     /// The latest frame as a JPEG (the viewport, or the whole frame), raw or turned upright,
     /// with the orientation and viewport it was taken with.
     private func snapshot(upright: Bool, full: Bool) -> (Data, OrientationState, CGRect)? {
-        lock.lock(); let img = latest; let v = view; lock.unlock()
+        lock.lock(); let img = latest; let v = view; let frameOptical = latestOptical; lock.unlock()
         let o = orientation.state
         guard var img else { return nil }
-        if !full { img = Self.crop(img, to: v.rect) }
+        let rect = full ? CGRect(x: 0, y: 0, width: 1, height: 1) : v.rect(forFrameAt: frameOptical)
+        if !full { img = Self.crop(img, to: rect) }
         if upright { img = img.oriented(OrientationMath.imageOrientation(rotation: o.rotation)) }
-        return jpeg(img).map { ($0, o, full ? CGRect(x: 0, y: 0, width: 1, height: 1) : v.rect) }
+        return jpeg(img).map { ($0, o, rect) }
     }
 
     private func jpeg(_ img: CIImage) -> Data? {
