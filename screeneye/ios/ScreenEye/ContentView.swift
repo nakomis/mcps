@@ -104,7 +104,7 @@ struct ContentView: View {
                     .font(.system(.headline, design: .monospaced))
                     .frame(minWidth: 56)
                     .accessibilityLabel("Zoom \(ZoomMath.label(camera.zoom))")
-                ForEach(ZoomMath.steps(min: camera.minZoom, max: camera.maxZoom), id: \.self) { step in
+                ForEach(ZoomMath.steps(lenses: camera.lensSteps, min: camera.minZoom, max: camera.maxZoom), id: \.self) { step in
                     let current = abs(camera.zoom - step) < 0.05
                     Button(ZoomMath.label(step)) { camera.setZoom(step) }
                         .font(.system(.subheadline, design: .monospaced).bold())

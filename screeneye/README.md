@@ -1,6 +1,6 @@
 # ScreenEye
 
-An iPhone pointed at a screen, so Claude can read it — a console with no SSH, a
+An iPhone (or iPad) pointed at a screen, so Claude can read it — a console with no SSH, a
 BIOS setup page, a TV, a printer's touchscreen.
 
 - [`ios/`](ios/) — the app. It runs the back camera (4K where supported) and
@@ -66,7 +66,7 @@ and `viewport` all agree with the picture it returns.
 ## On the phone
 
 - **Zoom:** pinch the preview, tap a step (the device's lenses, such as 0.5×,
-  1×, 2×, 4×) or drag the slider up to the device's maximum. It's the same zoom
+  1×, 2×, 4×; on a one-lens iPad, 1× and digital 2× and 5×) or drag the slider up to the device's maximum. It's the same zoom
   as `/set?zoom=`: either moves the other, and `/status` reports it.
 - **Pan:** zoomed past a lens, drag the preview to move around; an overview in
   the corner shows the whole frame with the visible region outlined. Double

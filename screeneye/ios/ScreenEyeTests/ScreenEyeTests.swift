@@ -8,11 +8,19 @@ final class ZoomMathTests: XCTestCase {
         XCTAssertEqual(ZoomMath.clamp(3, 0.5, 60), 3)
     }
 
-    func testStepsOnlyWhereTheDeviceReaches() {
-        XCTAssertEqual(ZoomMath.steps(min: 0.5, max: 60), [0.5, 1, 2, 5])
-        XCTAssertEqual(ZoomMath.steps(min: 1, max: 10), [1, 2, 5])
-        XCTAssertEqual(ZoomMath.steps(min: 1, max: 4), [1, 2])
-        XCTAssertEqual(ZoomMath.steps(min: 0.5, max: 4.999), [0.5, 1, 2, 5])  // rounding slack
+    func testStepsAreTheDevicesLenses() {
+        // A Pro iPhone: ultra-wide, wide, the main camera's 2x crop and a telephoto.
+        XCTAssertEqual(ZoomMath.steps(lenses: [0.5, 1, 2, 4], min: 0.5, max: 60), [0.5, 1, 2, 4])
+        XCTAssertEqual(ZoomMath.steps(lenses: [1, 0.5], min: 0.5, max: 10), [0.5, 1])  // dual wide, unsorted
+        XCTAssertEqual(ZoomMath.steps(lenses: [0.5, 1, 5.001], min: 0.5, max: 4.999), [0.5, 1, 5.001])  // slack
+    }
+
+    func testOneLensGetsDigitalSteps() {
+        // An iPad with one wide camera.
+        XCTAssertEqual(ZoomMath.steps(lenses: [1], min: 1, max: 10), [1, 2, 5])
+        XCTAssertEqual(ZoomMath.steps(lenses: [1], min: 1, max: 3), [1, 2])
+        XCTAssertEqual(ZoomMath.steps(lenses: [1], min: 1, max: 1), [1])
+        XCTAssertEqual(ZoomMath.steps(lenses: [], min: 1, max: 5), [2, 5])
     }
 
     func testSliderRoundTripsAndIsLogarithmic() {

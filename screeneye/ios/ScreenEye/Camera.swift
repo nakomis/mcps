@@ -30,6 +30,8 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
     var maxZoom: Double = 1
     /// What's visible: zoom, lens step and centre.
     var viewport = Viewport()
+    /// The device's lens steps, for the zoom buttons.
+    var lensSteps: [Double] = [1]
     /// The raw frame's width / height.
     var frameAspect: Double = 16.0 / 9.0
     /// A small picture of the lens's whole frame, raw, for the overview while zoomed in digitally.
@@ -160,9 +162,10 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
     /// end on the newest.
     private func mirror() {
         lock.lock()
-        let (v, range) = (view, zoomRange)
+        let (v, range, steps) = (view, zoomRange, lenses)
         lock.unlock()
         (minZoom, maxZoom) = range
+        if lensSteps != steps { lensSteps = steps }
         zoom = v.zoom
         if viewport != v { viewport = v }
     }
