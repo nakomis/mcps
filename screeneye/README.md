@@ -28,6 +28,36 @@ If you find this useful, please consider buying me a coffee:
 Snapshots are in the sensor's native landscape orientation whatever way up the
 phone is.
 
+## On the phone
+
+- **Zoom:** pinch the preview, tap a step (0.5×, 1×, 2×, 5×, where the phone has
+  them) or drag the slider up to the phone's maximum. It's the same zoom as
+  `/set?zoom=`: either moves the other, and `/status` reports it.
+- **Save to Mac:** pushes the current full-resolution frame (the same image as
+  `/snapshot.jpg`), with the camera state and an optional note, to the ScreenEye
+  host. The host is found over Bonjour (`_screeneye-host._tcp`, TXT
+  `path=/api/frames`); if none is found, the address typed under Settings (the
+  gear) is used. The app shows progress, then the saved file name or the error.
+
+The push is `POST {host}/api/frames`, `multipart/form-data`:
+
+| Field | Contents |
+|---|---|
+| `image` | `image/jpeg`, filename `frame.jpg` |
+| `meta` | JSON: `{"zoom": n, "lens": "…", "ev": n, "focus": [x, y] \| null, "lensPosition": n, "note": "…" \| null, "device": "…", "taken": "<ISO 8601 with offset>"}` |
+
+`focus` is the last point set with `/set?focus=`, or `null`. The host replies
+`201` with `{"name": "HHMMSS-note.jpg", "path": "screeneye/YYYY-MM-DD/HHMMSS-note.jpg"}`,
+or `{"error": "…"}` with a 4xx/5xx.
+
+### Building the app
+
+```sh
+cd ios && xcodegen generate
+xcodebuild -project ScreenEye.xcodeproj -scheme ScreenEye \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test   # unit tests
+```
+
 ## The MCP server
 
 | Tool | Does |

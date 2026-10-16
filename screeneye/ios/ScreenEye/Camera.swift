@@ -13,6 +13,12 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
     let session = AVCaptureSession()
     var statusLine = "starting…"
 
+    // Zoom state for the on-screen controls (main thread), in multiples of the 1x lens.
+    // Follows the device by KVO, so `/set?zoom=` and pinching both move it.
+    var zoom: Double = 1
+    var minZoom: Double = 1
+    var maxZoom: Double = 1
+
     private var device: AVCaptureDevice?
     private let output = AVCaptureVideoDataOutput()
     private let queue = DispatchQueue(label: "camera")
@@ -20,6 +26,16 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
     private var latest: CIImage?
     private let ciContext = CIContext()
     private var listener: NWListener?
+    private var oneXFactor: CGFloat = 1
+    private var zoomObservation: NSKeyValueObservation?
+    /// The last focus point set through `/set?focus=`, if any (camera queue).
+    private var focusPoint: CGPoint?
+    /// The latest on-screen zoom not yet written to the device (guarded by `lock`), so a burst
+    /// of pinch or slider events becomes one write per trip through the camera queue.
+    @ObservationIgnored private var pendingZoom: Double?
+    /// On-screen zoom writes queued but not finished (main thread). While any are, KVO values
+    /// are stale echoes of earlier writes, so they're ignored rather than snapping the UI back.
+    @ObservationIgnored private var localZoomWrites = 0
 
     func start() {
         AVCaptureDevice.requestAccess(for: .video) { ok in
@@ -33,6 +49,7 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
         guard let dev = types.lazy.compactMap({ AVCaptureDevice.default($0, for: .video, position: .back) }).first,
               let input = try? AVCaptureDeviceInput(device: dev) else { setStatus("no camera"); return }
         device = dev
+        oneXFactor = dev.virtualDeviceSwitchOverVideoZoomFactors.first.map { CGFloat(truncating: $0) } ?? 1
         session.beginConfiguration()
         session.sessionPreset = session.canSetSessionPreset(.hd4K3840x2160) ? .hd4K3840x2160 : .high
         if session.canAddInput(input) { session.addInput(input) }
@@ -42,6 +59,16 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
         if session.canAddOutput(output) { session.addOutput(output) }
         session.commitConfiguration()
         session.startRunning()
+        let oneX = oneXFactor
+        let range = (Double(dev.minAvailableVideoZoomFactor / oneX), Double(dev.maxAvailableVideoZoomFactor / oneX))
+        zoomObservation = dev.observe(\.videoZoomFactor, options: [.initial, .new]) { [weak self] d, _ in
+            let z = Double(d.videoZoomFactor / oneX)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                (self.minZoom, self.maxZoom) = range
+                if self.localZoomWrites == 0 { self.zoom = z }
+            }
+        }
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
@@ -51,9 +78,41 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
     }
 
     /// The factor the virtual device uses for the 1x (wide) lens.
-    private var oneX: CGFloat {
-        guard let d = device else { return 1 }
-        return d.virtualDeviceSwitchOverVideoZoomFactors.first.map { CGFloat(truncating: $0) } ?? 1
+    private var oneX: CGFloat { oneXFactor }
+
+    /// Zoom from the on-screen controls (multiples of the 1x lens), clamped to the device's range
+    /// exactly as `/set?zoom=` is.
+    /// Call on the main thread.
+    func setZoom(_ z: Double) {
+        zoom = ZoomMath.clamp(z, minZoom, maxZoom)
+        lock.lock()
+        let alreadyQueued = pendingZoom != nil
+        pendingZoom = z
+        lock.unlock()
+        guard !alreadyQueued else { return }
+        localZoomWrites += 1
+        queue.async {
+            self.lock.lock()
+            let target = self.pendingZoom
+            self.pendingZoom = nil
+            self.lock.unlock()
+            var actual: Double?
+            if let d = self.device, let target, (try? d.lockForConfiguration()) != nil {
+                self.setZoomFactor(d, target)
+                d.unlockForConfiguration()
+                actual = Double(d.videoZoomFactor / self.oneX)
+            }
+            // Posted after this write's KVO echo, so the UI settles on what the device really did.
+            DispatchQueue.main.async {
+                self.localZoomWrites -= 1
+                if self.localZoomWrites == 0, let actual { self.zoom = actual }
+            }
+        }
+    }
+
+    /// Call with the device locked for configuration.
+    private func setZoomFactor(_ d: AVCaptureDevice, _ z: Double) {
+        d.videoZoomFactor = ZoomMath.clamp(CGFloat(z) * oneX, d.minAvailableVideoZoomFactor, d.maxAvailableVideoZoomFactor)
     }
 
     private func apply(_ q: [String: String]) -> String {
@@ -62,12 +121,12 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
             try d.lockForConfiguration()
             defer { d.unlockForConfiguration() }
             if let z = q["zoom"].flatMap(Double.init) {
-                d.videoZoomFactor = max(d.minAvailableVideoZoomFactor,
-                                        min(CGFloat(z) * oneX, d.maxAvailableVideoZoomFactor))
+                setZoomFactor(d, z)
             }
             if let f = q["focus"]?.split(separator: ",").compactMap({ Double($0) }), f.count == 2,
                d.isFocusPointOfInterestSupported {
                 d.focusPointOfInterest = CGPoint(x: f[0], y: f[1])
+                focusPoint = CGPoint(x: f[0], y: f[1])
                 d.focusMode = .autoFocus
                 if d.isExposurePointOfInterestSupported {
                     d.exposurePointOfInterest = CGPoint(x: f[0], y: f[1])
@@ -95,10 +154,33 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
         """
     }
 
+    /// The current full-resolution frame (as `/snapshot.jpg` serves it) and the camera state,
+    /// for pushing to the host. Blocks briefly on the camera queue, so call it off the main thread.
+    func frameForSaving(note: String?, device name: String) -> (Data, FrameMeta)? {
+        let taken = FrameMeta.timestamp(Date())
+        // Take the frame and the state together on the camera queue, so they match; encode after.
+        let captured: (CIImage, FrameMeta)? = queue.sync {
+            lock.lock(); let img = latest; lock.unlock()
+            guard let d = device, let img else { return nil }
+            return (img, FrameMeta(
+                zoom: FrameMeta.round(Double(d.videoZoomFactor / oneX), 2),
+                lens: d.activePrimaryConstituent?.localizedName ?? "?",
+                ev: FrameMeta.round(Double(d.exposureTargetBias), 2),
+                focus: focusPoint.map { [FrameMeta.round($0.x, 3), FrameMeta.round($0.y, 3)] },
+                lensPosition: FrameMeta.round(Double(d.lensPosition), 3),
+                note: note, device: name, taken: taken))
+        }
+        guard let (img, meta) = captured, let jpeg = jpeg(img) else { return nil }
+        return (jpeg, meta)
+    }
+
     private func snapshot() -> Data? {
         lock.lock(); let img = latest; lock.unlock()
-        guard let img else { return nil }
-        return ciContext.jpegRepresentation(of: img, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
+        return img.flatMap(jpeg)
+    }
+
+    private func jpeg(_ img: CIImage) -> Data? {
+        ciContext.jpegRepresentation(of: img, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
                                             options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.92])
     }
 
