@@ -5,9 +5,14 @@ Claude can read it.
 The app serves the back camera over HTTP on port 8080 and advertises itself
 over Bonjour as ``_screeneye._tcp``:
 
-  GET /snapshot.jpg    latest frame (4K where the phone supports it)
+  GET /snapshot.jpg    latest frame (4K where the phone supports it), raw:
+                       in the sensor's landscape, whichever way up the phone
+                       is. Newer apps add X-ScreenEye-Orientation and
+                       X-ScreenEye-Rotation headers.
   GET /set?...         zoom, focus=x,y, lock=0|1, ev
-  GET /status          JSON: zoom, maxZoom, lens, focusMode, lensPosition, ev
+  GET /status          JSON: zoom, maxZoom, lens, focusMode, lensPosition, ev,
+                       and from newer apps orientation and rotation (the
+                       clockwise degrees that turn a raw frame upright)
 
 Snapshots are written to disk and returned as a path rather than as image
 content: meta-mcp flattens every result to text, so an inline image would
@@ -37,6 +42,7 @@ from pathlib import Path
 import httpx
 from mcp.server.fastmcp import FastMCP
 from PIL import Image
+from PIL.Image import Transpose
 from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
 
 mcp = FastMCP("screeneye-mcp")
@@ -160,6 +166,38 @@ def _get(path: str, params: dict | None = None) -> httpx.Response:
     raise AssertionError("unreachable")
 
 
+# Clockwise degrees -> the PIL transpose that turns an image that far
+# (PIL's ROTATE_* are anticlockwise).
+_CLOCKWISE = {90: Transpose.ROTATE_270, 180: Transpose.ROTATE_180, 270: Transpose.ROTATE_90}
+
+
+def rotation_of(value) -> int:
+    """A rotation as the phone reports it, as 0, 90, 180 or 270; anything
+    missing or unrecognised is 0 (leave the frame as it is)."""
+    try:
+        r = int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0
+    return r if r in _CLOCKWISE else 0
+
+
+def rotate_upright(img: Image.Image, rotation: int) -> Image.Image:
+    """The image turned `rotation` degrees clockwise (0 leaves it alone)."""
+    t = _CLOCKWISE.get(rotation)
+    return img.transpose(t) if t is not None else img
+
+
+def _orientation(snap: httpx.Response) -> tuple[str | None, int]:
+    """The phone's orientation and rotation for a frame: from the snapshot's
+    own headers (taken with the frame), else from /status. Apps from before
+    EYE-3 report neither: (None, 0)."""
+    if "x-screeneye-rotation" in snap.headers:
+        return (snap.headers.get("x-screeneye-orientation"),
+                rotation_of(snap.headers["x-screeneye-rotation"]))
+    st = _get("/status").json()
+    return st.get("orientation"), rotation_of(st.get("rotation"))
+
+
 def _settings(zoom, focus_x, focus_y, lock, ev) -> dict:
     p: dict[str, str] = {}
     if zoom is not None:
@@ -178,7 +216,8 @@ def _settings(zoom, focus_x, focus_y, lock, ev) -> dict:
 @mcp.tool()
 def status() -> dict:
     """Camera state (zoom as a multiple of the 1x lens, max zoom, active lens,
-    focus mode, lens position, exposure bias) and the phone's URL."""
+    focus mode, lens position, exposure bias, orientation and the clockwise
+    rotation that makes a raw frame upright) and the phone's URL."""
     return {"url": _url(), **_get("/status").json()}
 
 
@@ -211,6 +250,7 @@ def snapshot(
     crop: list[float] | None = None,
     max_dim: int = 2560,
     settle_ms: int = 800,
+    upright: bool = True,
 ) -> dict:
     """Take a picture and save it as a JPEG; returns its path. Read the path to
     see it. If SCREENEYE_PATH_MAP applies, path is the caller's view of the
@@ -218,9 +258,15 @@ def snapshot(
 
     Camera arguments are as for set_camera and are applied first; the camera
     then gets settle_ms to refocus before the frame is taken.
-    crop: [x, y, w, h] as fractions of the frame, applied before scaling, to
-        read a small part of the screen at full sensor resolution.
+    upright: turn the frame the right way up, from the phone's orientation
+        (the default); false gives the raw sensor frame, in landscape whichever
+        way up the phone is. The result's orientation and rotated_deg (the
+        clockwise turn applied) say what was done.
+    crop: [x, y, w, h] as fractions of the frame (of the upright frame, unless
+        upright is false), applied before scaling, to read a small part of
+        the screen at full sensor resolution.
     max_dim: longest side of the saved image, in pixels (0 = no scaling).
+    focus_x, focus_y are always in the raw sensor frame, as for set_camera.
     """
     params = _settings(zoom, focus_x, focus_y, lock, ev)
     cam = None
@@ -228,8 +274,12 @@ def snapshot(
         cam = _get("/set", params).json()
         time.sleep(max(settle_ms, 0) / 1000)
 
-    img = Image.open(io.BytesIO(_get("/snapshot.jpg").content))
+    snap = _get("/snapshot.jpg")
+    img = Image.open(io.BytesIO(snap.content))
     img.load()
+    orientation, rotation = _orientation(snap) if upright else (
+        snap.headers.get("x-screeneye-orientation"), 0)
+    img = rotate_upright(img, rotation)
     if crop:
         if len(crop) != 4:
             raise ValueError("crop is [x, y, w, h] as fractions of the frame")
@@ -244,7 +294,8 @@ def snapshot(
     day.mkdir(parents=True, exist_ok=True)
     path = day / f"snap-{now:%Y%m%d-%H%M%S-%f}.jpg"
     img.convert("RGB").save(path, "JPEG", quality=90)
-    out = {"path": map_path(path), "width": img.width, "height": img.height}
+    out = {"path": map_path(path), "width": img.width, "height": img.height,
+           "orientation": orientation, "rotated_deg": rotation}
     if out["path"] != str(path):
         out["host_path"] = str(path)
     if cam is not None:

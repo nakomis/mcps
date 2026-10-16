@@ -43,9 +43,12 @@ final class FrameMetaTests: XCTestCase {
     func testAllFieldsWithValues() throws {
         let m = FrameMeta(zoom: 2.5, lens: "Back Telephoto Camera", ev: -1, focus: [0.25, 0.75],
                           lensPosition: 0.8, note: "bed level", device: "iPhone",
-                          taken: "2026-10-16T14:03:22+01:00")
+                          taken: "2026-10-16T14:03:22+01:00", orientation: "portraitUpsideDown", rotation: 270)
         let o = try object(m)
-        XCTAssertEqual(Set(o.keys), ["zoom", "lens", "ev", "focus", "lensPosition", "note", "device", "taken"])
+        XCTAssertEqual(Set(o.keys), ["zoom", "lens", "ev", "focus", "lensPosition", "note", "device", "taken",
+                                     "orientation", "rotation"])
+        XCTAssertEqual(o["orientation"] as? String, "portraitUpsideDown")
+        XCTAssertEqual(o["rotation"] as? Int, 270)
         XCTAssertEqual(o["zoom"] as? Double, 2.5)
         XCTAssertEqual(o["focus"] as? [Double], [0.25, 0.75])
         XCTAssertEqual(o["note"] as? String, "bed level")
@@ -58,6 +61,7 @@ final class FrameMetaTests: XCTestCase {
         let json = try XCTUnwrap(String(data: m.json(), encoding: .utf8))
         XCTAssertTrue(json.contains("\"focus\":null"), json)
         XCTAssertTrue(json.contains("\"note\":null"), json)
+        XCTAssertTrue(json.contains("\"orientation\":\"unknown\",\"rotation\":0"), json)  // the defaults
     }
 
     func testCleanNote() {
@@ -71,7 +75,7 @@ final class FrameMetaTests: XCTestCase {
                           focus: nil, lensPosition: 0, note: nil, device: "d", taken: "t")
         let json = try XCTUnwrap(String(data: m.json(), encoding: .utf8))
         XCTAssertTrue(json.contains("\"ev\":0.3,"), json)
-        XCTAssertTrue(json.hasSuffix("\"zoom\":2}"), json)
+        XCTAssertTrue(json.contains("\"zoom\":2}") || json.contains("\"zoom\":2,"), json)
     }
 
     func testTimestampAlwaysHasANumericOffset() {
@@ -140,5 +144,99 @@ final class SaveErrorTests: XCTestCase {
         let json = Data(#"{"name": "140322-bed-level.jpg", "path": "screeneye/2026-10-16/140322-bed-level.jpg"}"#.utf8)
         let saved = try JSONDecoder().decode(SavedFrame.self, from: json)
         XCTAssertEqual(saved, SavedFrame(name: "140322-bed-level.jpg", path: "screeneye/2026-10-16/140322-bed-level.jpg"))
+    }
+}
+
+final class OrientationTests: XCTestCase {
+    private func state(_ gx: Double, _ gy: Double, _ gz: Double,
+                       from previous: OrientationState = OrientationState()) -> OrientationState {
+        OrientationMath.update(previous, gx: gx, gy: gy, gz: gz)
+    }
+
+    func testUprightOrientations() {
+        // CoreMotion's device frame: x to the screen's right, y to its top, z out of the screen.
+        XCTAssertEqual(state(0, -1, 0), OrientationState(orientation: .portrait, rotation: 90))
+        XCTAssertEqual(state(0, 1, 0), OrientationState(orientation: .portraitUpsideDown, rotation: 270))
+        XCTAssertEqual(state(-1, 0, 0), OrientationState(orientation: .landscapeLeft, rotation: 0))
+        XCTAssertEqual(state(1, 0, 0), OrientationState(orientation: .landscapeRight, rotation: 180))
+    }
+
+    func testTiltedTowardsTheCameraStillCounts() {
+        // Leaning back 45° (looking down at a desk), still in landscape right.
+        XCTAssertEqual(state(0.7, 0.05, -0.7).orientation, .landscapeRight)
+        XCTAssertEqual(state(0.1, -0.6, 0.79).orientation, .portrait)
+    }
+
+    func testFlatKeepsTheLastRotation() {
+        let upsideDown = state(0, 1, 0)
+        XCTAssertEqual(state(0.1, 0.2, -0.97, from: upsideDown), OrientationState(orientation: .faceUp, rotation: 270))
+        XCTAssertEqual(state(0.1, 0.2, 0.97, from: upsideDown), OrientationState(orientation: .faceDown, rotation: 270))
+        // And rotation picks up again when it stands back up.
+        let flat = state(0, 0, -1, from: upsideDown)
+        XCTAssertEqual(state(1, 0, 0, from: flat), OrientationState(orientation: .landscapeRight, rotation: 180))
+    }
+
+    func testFlatFromTheStartIsRaw() {
+        XCTAssertEqual(state(0, 0, -1), OrientationState(orientation: .faceUp, rotation: 0))
+        XCTAssertEqual(state(0, 0, 1), OrientationState(orientation: .faceDown, rotation: 0))
+    }
+
+    func testNoReadingChangesNothing() {
+        let p = state(1, 0, 0)
+        XCTAssertEqual(state(0, 0, 0, from: p), p)
+        XCTAssertEqual(state(.nan, 0, -1, from: p), p)
+    }
+
+    func testHysteresisNearTheDiagonal() {
+        let left = state(-1, 0, 0)  // landscapeLeft, 0°
+        func at(_ deg: Double, from p: OrientationState) -> OrientationState {
+            // Gravity for a picture angle `deg` (0 = landscapeLeft, clockwise).
+            let a = (deg - 180) * .pi / 180
+            return state(cos(a), sin(a), 0, from: p)
+        }
+        XCTAssertEqual(at(50, from: left), left)                     // past 45°, inside the dead band
+        XCTAssertEqual(at(56, from: left).orientation, .portrait)    // out of it
+        XCTAssertEqual(at(50, from: OrientationState()).orientation, .portrait)  // no previous: nearest
+        XCTAssertEqual(at(-50, from: left), left)
+        XCTAssertEqual(at(-56, from: left).orientation, .portraitUpsideDown)
+    }
+
+    func testEveryAngleSnapsToAQuarterTurn() {
+        for deg in stride(from: 0.0, to: 360, by: 7.5) {
+            let a = (deg - 180) * .pi / 180
+            let s = state(cos(a), sin(a), 0)
+            XCTAssertTrue([0, 90, 180, 270].contains(s.rotation), "\(deg)")
+            XCTAssertEqual(s.orientation.ownRotation, s.rotation)
+        }
+    }
+
+    /// The `CIImage` turn really is clockwise: a 2×1 image, red left, blue right, turned 90°
+    /// clockwise has red on top.
+    func testImageOrientationTurnsClockwise() throws {
+        let red = CIImage(color: .red).cropped(to: CGRect(x: 0, y: 0, width: 1, height: 1))
+        let blue = CIImage(color: .blue).cropped(to: CGRect(x: 1, y: 0, width: 1, height: 1))
+        let img = red.composited(over: blue)
+        func pixels(_ rotation: Int) throws -> (Int, [String]) {
+            let out = img.oriented(OrientationMath.imageOrientation(rotation: rotation))
+            let cg = try XCTUnwrap(CIContext().createCGImage(out, from: out.extent))
+            var data = [UInt8](repeating: 0, count: cg.width * cg.height * 4)
+            let ctx = try XCTUnwrap(CGContext(data: &data, width: cg.width, height: cg.height, bitsPerComponent: 8,
+                                              bytesPerRow: cg.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+            // Rows top first, as the picture is seen.
+            return (cg.width, stride(from: 0, to: data.count, by: 4).map {
+                data[$0] > 128 ? "R" : data[$0 + 2] > 128 ? "B" : "?"
+            })
+        }
+        func check(_ rotation: Int, width: Int, _ want: [String]) throws {
+            let (w, got) = try pixels(rotation)
+            XCTAssertEqual(w, width, "\(rotation)")
+            XCTAssertEqual(got, want, "\(rotation)")
+        }
+        try check(0, width: 2, ["R", "B"])
+        try check(90, width: 1, ["R", "B"])   // red on top
+        try check(180, width: 2, ["B", "R"])
+        try check(270, width: 1, ["B", "R"])  // red at the bottom
     }
 }

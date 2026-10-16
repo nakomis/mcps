@@ -5,9 +5,11 @@ import Observation
 import UIKit
 
 /// Runs the back camera with full control and serves it over HTTP on port 8080:
-///   GET /snapshot.jpg                    latest frame
+///   GET /snapshot.jpg                    latest frame, raw (sensor landscape); headers
+///                                        X-ScreenEye-Orientation and X-ScreenEye-Rotation
+///   GET /snapshot.jpg?upright=1          the same frame turned upright
 ///   GET /set?zoom=4&focus=0.5,0.5&lock=1&ev=-1   zoom (x of the 1x lens), focus point, lock, exposure bias
-///   GET /status                          JSON
+///   GET /status                          JSON, with `orientation` and `rotation` (clockwise degrees)
 @Observable
 final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     let session = AVCaptureSession()
@@ -20,6 +22,7 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
     var maxZoom: Double = 1
 
     private var device: AVCaptureDevice?
+    private let orientation = OrientationTracker()
     private let output = AVCaptureVideoDataOutput()
     private let queue = DispatchQueue(label: "camera")
     private let lock = NSLock()
@@ -38,6 +41,7 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
     @ObservationIgnored private var localZoomWrites = 0
 
     func start() {
+        orientation.start()
         AVCaptureDevice.requestAccess(for: .video) { ok in
             guard ok else { self.setStatus("camera access denied"); return }
             self.queue.async { self.configure(); self.startServer() }
@@ -147,10 +151,12 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
 
     private func status() -> String {
         guard let d = device else { return "{}" }
+        let o = orientation.state
         return """
         {"zoom": \(String(format: "%.2f", d.videoZoomFactor / oneX)), "maxZoom": \(String(format: "%.1f", d.maxAvailableVideoZoomFactor / oneX)), \
         "lens": "\(d.activePrimaryConstituent?.localizedName ?? "?")", "focusMode": \(d.focusMode.rawValue), \
-        "lensPosition": \(d.lensPosition), "ev": \(d.exposureTargetBias)}
+        "lensPosition": \(d.lensPosition), "ev": \(d.exposureTargetBias), \
+        "orientation": "\(o.orientation.rawValue)", "rotation": \(o.rotation)}
         """
     }
 
@@ -162,21 +168,27 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
         let captured: (CIImage, FrameMeta)? = queue.sync {
             lock.lock(); let img = latest; lock.unlock()
             guard let d = device, let img else { return nil }
+            let o = orientation.state
             return (img, FrameMeta(
                 zoom: FrameMeta.round(Double(d.videoZoomFactor / oneX), 2),
                 lens: d.activePrimaryConstituent?.localizedName ?? "?",
                 ev: FrameMeta.round(Double(d.exposureTargetBias), 2),
                 focus: focusPoint.map { [FrameMeta.round($0.x, 3), FrameMeta.round($0.y, 3)] },
                 lensPosition: FrameMeta.round(Double(d.lensPosition), 3),
-                note: note, device: name, taken: taken))
+                note: note, device: name, taken: taken,
+                orientation: o.orientation.rawValue, rotation: o.rotation))
         }
         guard let (img, meta) = captured, let jpeg = jpeg(img) else { return nil }
         return (jpeg, meta)
     }
 
-    private func snapshot() -> Data? {
+    /// The latest frame as a JPEG, raw or turned upright, and the orientation when it was taken.
+    private func snapshot(upright: Bool) -> (Data, OrientationState)? {
         lock.lock(); let img = latest; lock.unlock()
-        return img.flatMap(jpeg)
+        let o = orientation.state
+        guard var img else { return nil }
+        if upright { img = img.oriented(OrientationMath.imageOrientation(rotation: o.rotation)) }
+        return jpeg(img).map { ($0, o) }
     }
 
     private func jpeg(_ img: CIImage) -> Data? {
@@ -205,15 +217,21 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
             let target = line.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
             let comps = URLComponents(string: target)
             let q = Dictionary((comps?.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { $1 })
-            var body = Data(), type = "application/json", code = "200 OK"
+            var body = Data(), type = "application/json", code = "200 OK", extra = ""
             switch comps?.path ?? "/" {
             case "/snapshot.jpg":
-                if let j = self.snapshot() { body = j; type = "image/jpeg" } else { code = "503 Service Unavailable" }
+                let upright = ["1", "true", "yes"].contains(q["upright"]?.lowercased() ?? "")
+                if let (j, o) = self.snapshot(upright: upright) {
+                    body = j; type = "image/jpeg"
+                    // The rotation still to apply: none if this frame is already upright.
+                    extra = "X-ScreenEye-Orientation: \(o.orientation.rawValue)\r\n" +
+                        "X-ScreenEye-Rotation: \(upright ? 0 : o.rotation)\r\n"
+                } else { code = "503 Service Unavailable" }
             case "/set": body = Data(self.queue.sync { self.apply(q) }.utf8)
             case "/status": body = Data(self.queue.sync { self.status() }.utf8)
             default: code = "404 Not Found"
             }
-            var head = "HTTP/1.1 \(code)\r\nContent-Type: \(type)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+            var head = "HTTP/1.1 \(code)\r\nContent-Type: \(type)\r\nContent-Length: \(body.count)\r\n\(extra)Connection: close\r\n\r\n"
             if body.isEmpty && code != "200 OK" { head = "HTTP/1.1 \(code)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n" }
             c.send(content: Data(head.utf8) + body, completion: .contentProcessed { _ in c.cancel() })
         }
