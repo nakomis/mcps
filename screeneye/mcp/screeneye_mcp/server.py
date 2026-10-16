@@ -16,7 +16,13 @@ arrive as base64. Read the path to see the picture.
 Environment variables:
   SCREENEYE_URL   Base URL of the phone, e.g. http://172.29.0.40:8080.
                   Skips Bonjour discovery when set.
-  SCREENEYE_DIR   Where snapshots go (default: /tmp/screeneye)
+  SCREENEYE_DIR   Where snapshots go (default: /tmp/screeneye), in a
+                  YYYY-MM-DD folder per day
+  SCREENEYE_PATH_MAP
+                  Rewrites the returned path for the reader, when the MCP runs
+                  on another machine that writes to a shared folder:
+                  `local_prefix=reader_prefix`, several separated by commas,
+                  e.g. /mnt/print-recordings=/Volumes/print-recordings
 """
 
 import io
@@ -24,6 +30,7 @@ import os
 import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -41,21 +48,45 @@ _TIMEOUT = httpx.Timeout(10.0, connect=3.0)
 _base_url: str | None = os.environ.get("SCREENEYE_URL") or None
 
 
+def _path_map(spec: str | None) -> list[tuple[str, str]]:
+    """Parse SCREENEYE_PATH_MAP into (local, reader) prefixes, longest first."""
+    pairs = []
+    for item in (spec or "").split(","):
+        if not item.strip():
+            continue
+        local, sep, reader = item.partition("=")
+        if not sep or not local.strip() or not reader.strip():
+            raise ValueError(f"SCREENEYE_PATH_MAP entry {item!r} is not local=reader")
+        pairs.append((local.strip().rstrip("/"), reader.strip().rstrip("/")))
+    return sorted(pairs, key=lambda p: len(p[0]), reverse=True)
+
+
+def map_path(path: Path | str, spec: str | None = None) -> str:
+    """The path as the reader sees it: the longest matching SCREENEYE_PATH_MAP
+    prefix replaced, or unchanged when nothing matches."""
+    s = str(path)
+    if spec is None:
+        spec = os.environ.get("SCREENEYE_PATH_MAP")
+    for local, reader in _path_map(spec):
+        if s == local or s.startswith(local + "/"):
+            return reader + s[len(local):]
+    return s
+
+
 # ── Discovery ──────────────────────────────────────────────────────────────────
 
 class _Found(ServiceListener):
+    """Collects service names. Resolving happens on the caller's thread: a
+    blocking get_service_info inside the callback runs on zeroconf's own event
+    loop thread, which can't answer it, so it only ever timed out."""
+
     def __init__(self) -> None:
-        self.url: str | None = None
+        self.names: list[str] = []
         self.event = threading.Event()
 
     def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        info = zc.get_service_info(type_, name, timeout=2000)
-        if info is None:
-            return
-        v4 = [a for a in info.parsed_addresses() if ":" not in a]
-        if v4:
-            self.url = f"http://{v4[0]}:{info.port}"
-            self.event.set()
+        self.names.append(name)
+        self.event.set()
 
     def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         self.add_service(zc, type_, name)
@@ -65,12 +96,37 @@ class _Found(ServiceListener):
 
 
 def _discover(timeout: float = 5.0) -> str | None:
+    """Browse for the phone on a thread of its own. The tools run on the MCP
+    server's event loop thread, and a Zeroconf created there adopts that loop,
+    so its blocking calls would wait on a loop they are themselves blocking."""
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_browse, timeout).result()
+
+
+def _browse(timeout: float) -> str | None:
     zc = Zeroconf()
     try:
         found = _Found()
-        ServiceBrowser(zc, _SERVICE, found)
-        found.event.wait(timeout)
-        return found.url
+        browser = ServiceBrowser(zc, _SERVICE, found)
+        try:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                # With a name that hasn't resolved yet, look again shortly
+                # rather than wait for the next announcement.
+                pause = deadline - time.monotonic()
+                found.event.wait(max(min(pause, 0.5) if found.names else pause, 0))
+                found.event.clear()
+                # Every name, every time round: one that didn't resolve yet
+                # (the phone has only just announced itself) is tried again.
+                for name in dict.fromkeys(found.names):
+                    wait = min(3000, max(int((deadline - time.monotonic()) * 1000), 1))
+                    info = zc.get_service_info(_SERVICE, name, timeout=wait)
+                    v4 = [a for a in info.parsed_addresses() if ":" not in a] if info else []
+                    if v4:
+                        return f"http://{v4[0]}:{info.port}"
+            return None
+        finally:
+            browser.cancel()
     finally:
         zc.close()
 
@@ -157,7 +213,8 @@ def snapshot(
     settle_ms: int = 800,
 ) -> dict:
     """Take a picture and save it as a JPEG; returns its path. Read the path to
-    see it.
+    see it. If SCREENEYE_PATH_MAP applies, path is the caller's view of the
+    file and host_path is where the server wrote it.
 
     Camera arguments are as for set_camera and are applied first; the camera
     then gets settle_ms to refocus before the frame is taken.
@@ -182,10 +239,14 @@ def snapshot(
     if max_dim and max(img.size) > max_dim:
         img.thumbnail((max_dim, max_dim), Image.LANCZOS)
 
-    _DIR.mkdir(parents=True, exist_ok=True)
-    path = _DIR / f"snap-{datetime.now():%Y%m%d-%H%M%S-%f}.jpg"
+    now = datetime.now()
+    day = _DIR / f"{now:%Y-%m-%d}"
+    day.mkdir(parents=True, exist_ok=True)
+    path = day / f"snap-{now:%Y%m%d-%H%M%S-%f}.jpg"
     img.convert("RGB").save(path, "JPEG", quality=90)
-    out = {"path": str(path), "width": img.width, "height": img.height}
+    out = {"path": map_path(path), "width": img.width, "height": img.height}
+    if out["path"] != str(path):
+        out["host_path"] = str(path)
     if cam is not None:
         out["camera"] = cam
     return out

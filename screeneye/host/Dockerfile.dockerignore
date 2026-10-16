@@ -1,0 +1,8 @@
+# BuildKit reads this for host/Dockerfile (the context is screeneye/).
+ios
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/*.pyc
+**/uv.lock

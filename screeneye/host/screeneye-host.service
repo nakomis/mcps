@@ -1,0 +1,12 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!-- ScreenEye host (EYE-2): where the app's Save button pushes frames.
+     Install as /etc/avahi/services/screeneye-host.service. -->
+<service-group>
+  <name replace-wildcards="yes">ScreenEye host on %h</name>
+  <service>
+    <type>_screeneye-host._tcp</type>
+    <port>8090</port>
+    <txt-record>path=/api/frames</txt-record>
+  </service>
+</service-group>
