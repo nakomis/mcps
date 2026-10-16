@@ -6,16 +6,11 @@ struct ScreenEyeApp: App {
     @State private var camera = Camera()
     var body: some Scene {
         WindowGroup {
-            ZStack(alignment: .bottomLeading) {
-                PreviewView(session: camera.session).ignoresSafeArea()
-                Text(camera.statusLine)
-                    .font(.system(.caption, design: .monospaced))
-                    .padding(6).background(.black.opacity(0.6)).foregroundStyle(.white)
-            }
-            .onAppear {
-                UIApplication.shared.isIdleTimerDisabled = true
-                camera.start()
-            }
+            ContentView(camera: camera)
+                .onAppear {
+                    UIApplication.shared.isIdleTimerDisabled = true
+                    camera.start()
+                }
         }
     }
 }

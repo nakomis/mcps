@@ -16,7 +16,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_NSCameraUsageDescription: "ScreenEye points the camera at a screen so Claude can read it."
-        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "ScreenEye serves camera snapshots to your Mac on the local network."
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "ScreenEye serves camera snapshots to your Mac on the local network, and saves frames to it."
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait"
         MARKETING_VERSION: "1.0"
@@ -25,7 +25,27 @@ targets:
     info:
       path: ScreenEye/Info.plist
       properties:
-        NSBonjourServices: ["_screeneye._tcp"]
+        NSBonjourServices: ["_screeneye._tcp", "_screeneye-host._tcp"]
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         NSCameraUsageDescription: "ScreenEye points the camera at a screen so Claude can read it."
-        NSLocalNetworkUsageDescription: "ScreenEye serves camera snapshots to your Mac on the local network."
+        NSLocalNetworkUsageDescription: "ScreenEye serves camera snapshots to your Mac on the local network, and saves frames to it."
         UILaunchScreen: {}
+  ScreenEyeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [ScreenEyeTests]
+    dependencies:
+      - target: ScreenEye
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        DEVELOPMENT_TEAM: 62YFUFBSFX
+        SWIFT_VERSION: "6.0"
+schemes:
+  ScreenEye:
+    build:
+      targets:
+        ScreenEye: all
+    test:
+      targets: [ScreenEyeTests]

@@ -18,14 +18,20 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_screeneye._tcp</string>
+		<string>_screeneye-host._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>ScreenEye points the camera at a screen so Claude can read it.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>ScreenEye serves camera snapshots to your Mac on the local network.</string>
+	<string>ScreenEye serves camera snapshots to your Mac on the local network, and saves frames to it.</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 </dict>

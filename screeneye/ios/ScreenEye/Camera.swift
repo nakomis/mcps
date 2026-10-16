@@ -13,6 +13,12 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
     let session = AVCaptureSession()
     var statusLine = "starting…"
 
+    // Zoom state for the on-screen controls (main thread), in multiples of the 1x lens.
+    // Follows the device by KVO, so `/set?zoom=` and pinching both move it.
+    var zoom: Double = 1
+    var minZoom: Double = 1
+    var maxZoom: Double = 1
+
     private var device: AVCaptureDevice?
     private let output = AVCaptureVideoDataOutput()
     private let queue = DispatchQueue(label: "camera")
@@ -20,6 +26,10 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
     private var latest: CIImage?
     private let ciContext = CIContext()
     private var listener: NWListener?
+    private var oneXFactor: CGFloat = 1
+    private var zoomObservation: NSKeyValueObservation?
+    /// The last focus point set through `/set?focus=`, if any (camera queue).
+    private var focusPoint: CGPoint?
 
     func start() {
         AVCaptureDevice.requestAccess(for: .video) { ok in
@@ -33,6 +43,7 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
         guard let dev = types.lazy.compactMap({ AVCaptureDevice.default($0, for: .video, position: .back) }).first,
               let input = try? AVCaptureDeviceInput(device: dev) else { setStatus("no camera"); return }
         device = dev
+        oneXFactor = dev.virtualDeviceSwitchOverVideoZoomFactors.first.map { CGFloat(truncating: $0) } ?? 1
         session.beginConfiguration()
         session.sessionPreset = session.canSetSessionPreset(.hd4K3840x2160) ? .hd4K3840x2160 : .high
         if session.canAddInput(input) { session.addInput(input) }
@@ -42,6 +53,16 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
         if session.canAddOutput(output) { session.addOutput(output) }
         session.commitConfiguration()
         session.startRunning()
+        let oneX = oneXFactor
+        let range = (Double(dev.minAvailableVideoZoomFactor / oneX), Double(dev.maxAvailableVideoZoomFactor / oneX))
+        zoomObservation = dev.observe(\.videoZoomFactor, options: [.initial, .new]) { [weak self] d, _ in
+            let z = Double(d.videoZoomFactor / oneX)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                (self.minZoom, self.maxZoom) = range
+                self.zoom = z
+            }
+        }
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
@@ -51,9 +72,22 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
     }
 
     /// The factor the virtual device uses for the 1x (wide) lens.
-    private var oneX: CGFloat {
-        guard let d = device else { return 1 }
-        return d.virtualDeviceSwitchOverVideoZoomFactors.first.map { CGFloat(truncating: $0) } ?? 1
+    private var oneX: CGFloat { oneXFactor }
+
+    /// Zoom from the on-screen controls (multiples of the 1x lens), clamped to the device's range
+    /// exactly as `/set?zoom=` is.
+    func setZoom(_ z: Double) {
+        zoom = ZoomMath.clamp(z, minZoom, maxZoom)
+        queue.async {
+            guard let d = self.device, (try? d.lockForConfiguration()) != nil else { return }
+            self.setZoomFactor(d, z)
+            d.unlockForConfiguration()
+        }
+    }
+
+    /// Call with the device locked for configuration.
+    private func setZoomFactor(_ d: AVCaptureDevice, _ z: Double) {
+        d.videoZoomFactor = ZoomMath.clamp(CGFloat(z) * oneX, d.minAvailableVideoZoomFactor, d.maxAvailableVideoZoomFactor)
     }
 
     private func apply(_ q: [String: String]) -> String {
@@ -62,12 +96,12 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
             try d.lockForConfiguration()
             defer { d.unlockForConfiguration() }
             if let z = q["zoom"].flatMap(Double.init) {
-                d.videoZoomFactor = max(d.minAvailableVideoZoomFactor,
-                                        min(CGFloat(z) * oneX, d.maxAvailableVideoZoomFactor))
+                setZoomFactor(d, z)
             }
             if let f = q["focus"]?.split(separator: ",").compactMap({ Double($0) }), f.count == 2,
                d.isFocusPointOfInterestSupported {
                 d.focusPointOfInterest = CGPoint(x: f[0], y: f[1])
+                focusPoint = CGPoint(x: f[0], y: f[1])
                 d.focusMode = .autoFocus
                 if d.isExposurePointOfInterestSupported {
                     d.exposurePointOfInterest = CGPoint(x: f[0], y: f[1])
@@ -93,6 +127,24 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
         "lens": "\(d.activePrimaryConstituent?.localizedName ?? "?")", "focusMode": \(d.focusMode.rawValue), \
         "lensPosition": \(d.lensPosition), "ev": \(d.exposureTargetBias)}
         """
+    }
+
+    /// The current full-resolution frame (as `/snapshot.jpg` serves it) and the camera state,
+    /// for pushing to the host. Blocks briefly on the camera queue, so call it off the main thread.
+    func frameForSaving(note: String?, device name: String) -> (Data, FrameMeta)? {
+        let taken = FrameMeta.timestamp(Date())
+        let meta: FrameMeta? = queue.sync {
+            guard let d = device else { return nil }
+            return FrameMeta(
+                zoom: FrameMeta.round(Double(d.videoZoomFactor / oneX), 2),
+                lens: d.activePrimaryConstituent?.localizedName ?? "?",
+                ev: FrameMeta.round(Double(d.exposureTargetBias), 2),
+                focus: focusPoint.map { [FrameMeta.round($0.x, 3), FrameMeta.round($0.y, 3)] },
+                lensPosition: FrameMeta.round(Double(d.lensPosition), 3),
+                note: note, device: name, taken: taken)
+        }
+        guard let meta, let jpeg = snapshot() else { return nil }
+        return (jpeg, meta)
     }
 
     private func snapshot() -> Data? {
