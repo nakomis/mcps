@@ -21,10 +21,11 @@ If you find this useful, please consider buying me a coffee:
 
 | Endpoint | Does |
 |---|---|
-| `GET /snapshot.jpg` | Latest frame, raw. Headers `X-ScreenEye-Orientation` and `X-ScreenEye-Rotation` say which way up the phone was |
-| `GET /snapshot.jpg?upright=1` | The same frame turned upright (`X-ScreenEye-Rotation` is then `0`) |
-| `GET /set?zoom=4&focus=0.5,0.5&lock=1&ev=-1` | Zoom (multiple of the 1x lens), focus/exposure point, focus lock, exposure bias. Any subset |
-| `GET /status` | JSON: `zoom`, `maxZoom`, `lens`, `focusMode`, `lensPosition`, `ev`, `orientation`, `rotation` |
+| `GET /snapshot.jpg` | The picture: the visible region (the viewport) of the latest frame at full resolution, raw. Headers `X-ScreenEye-Orientation`, `X-ScreenEye-Rotation` and `X-ScreenEye-Viewport` (`x,y,w,h`, raw fractions of the lens's frame) |
+| `GET /snapshot.jpg?upright=1` | The same picture turned upright (`X-ScreenEye-Rotation` is then `0`) |
+| `GET /snapshot.jpg?full=1` | The lens's whole frame rather than the viewport (combines with `upright=1`) |
+| `GET /set?zoom=4&pan=0.3,0.6&focus=0.5,0.5&lock=1&ev=-1` | Zoom (multiple of the 1x lens), viewport centre (fractions of the lens's frame), focus/exposure point (fractions of the picture), focus lock, exposure bias. Any subset. Add `upright=1` to give `pan` and `focus` in the upright frame |
+| `GET /status` | JSON: `zoom`, `maxZoom`, `opticalZoom`, `lens`, `focusMode`, `lensPosition`, `ev`, `orientation`, `rotation`, `pan`, `viewport`, `coordinates`. `?upright=1` gives `pan` and `viewport` in the upright frame (`coordinates` says which) |
 
 ### Orientation
 
@@ -47,14 +48,30 @@ It's `0` if the phone has been flat since the app started. Near a 45°
 diagonal, the orientation only changes once the phone is 10° past it, so it
 doesn't flicker.
 
-`focus=x,y` (and the MCP's `focus_x`, `focus_y`) are always in the raw frame.
+### Zoom and pan
+
+Zoom is made of the lens's own zoom, at the nearest lens step at or below
+(the lenses the device has, and the zooms a lens crops its sensor to at full
+resolution, such as the 48 MP main camera's 2x), and a digital crop of that
+lens's frame. The crop is the **viewport**, and it can sit anywhere in the
+frame: that's panning. `pan` is the viewport's centre, kept inside the frame;
+at a lens step there's no crop, so nothing to pan.
+
+Coordinates are fractions, (0,0) top-left. On the app's API they're raw
+(the sensor's landscape) unless `upright=1` is given. `pan` and `viewport` are
+of the lens's whole frame; `focus` is a point in the picture (the viewport).
+The MCP works upright by default, so its `pan`, `focus_x`, `focus_y`, `crop`
+and `viewport` all agree with the picture it returns.
 
 ## On the phone
 
-- **Zoom:** pinch the preview, tap a step (0.5×, 1×, 2×, 5×, where the phone has
-  them) or drag the slider up to the phone's maximum. It's the same zoom as
-  `/set?zoom=`: either moves the other, and `/status` reports it.
-- **Save to Mac:** pushes the current full-resolution frame (the same image as
+- **Zoom:** pinch the preview, tap a step (the device's lenses, such as 0.5×,
+  1×, 2×, 4×) or drag the slider up to the device's maximum. It's the same zoom
+  as `/set?zoom=`: either moves the other, and `/status` reports it.
+- **Pan:** zoomed past a lens, drag the preview to move around; an overview in
+  the corner shows the whole frame with the visible region outlined. Double
+  tap recentres. It's the same viewport as `/set?pan=`.
+- **Save to Mac:** pushes what's on screen at full resolution (the same image as
   `/snapshot.jpg`), with the camera state and an optional note, to the ScreenEye
   host. The host is found over Bonjour (`_screeneye-host._tcp`, TXT
   `path=/api/frames`); if none is found, the address typed under Settings (the
@@ -65,11 +82,13 @@ The push is `POST {host}/api/frames`, `multipart/form-data`:
 | Field | Contents |
 |---|---|
 | `image` | `image/jpeg`, filename `frame.jpg` |
-| `meta` | JSON: `{"zoom": n, "lens": "…", "ev": n, "focus": [x, y] \| null, "lensPosition": n, "note": "…" \| null, "device": "…", "taken": "<ISO 8601 with offset>", "orientation": "…", "rotation": 0 \| 90 \| 180 \| 270}` |
+| `meta` | JSON: `{"zoom": n, "lens": "…", "ev": n, "focus": [x, y] \| null, "lensPosition": n, "note": "…" \| null, "device": "…", "taken": "<ISO 8601 with offset>", "orientation": "…", "rotation": 0 \| 90 \| 180 \| 270, "opticalZoom": n, "frame": [w, h], "crop": [x, y, w, h]}` |
 
-The image is raw; the host turns it upright using `rotation`.
+The image is raw; the host turns it upright using `rotation`. `frame` is the
+lens's whole frame in pixels and `crop` the part of it in the image (raw
+fractions); `zoom` is `opticalZoom` times the digital crop.
 
-`focus` is the last point set with `/set?focus=`, or `null`. The host replies
+`focus` is the last focus point set, as raw fractions of the lens's whole frame, or `null`. The host replies
 `201` with `{"name": "HHMMSS-note.jpg", "path": "screeneye/YYYY-MM-DD/HHMMSS-note.jpg"}`,
 or `{"error": "…"}` with a 4xx/5xx.
 
@@ -85,9 +104,9 @@ xcodebuild -project ScreenEye.xcodeproj -scheme ScreenEye \
 
 | Tool | Does |
 |---|---|
-| `snapshot` | Optionally adjusts the camera, waits `settle_ms` for focus, takes a frame, turns it upright, optionally crops (`[x, y, w, h]` fractions of the upright frame) and scales (`max_dim`, default 2560), saves a JPEG and returns its **path**, with `orientation` and `rotated_deg`. `upright=False` keeps the raw sensor frame |
-| `set_camera` | Zoom, focus point, focus lock, exposure bias |
-| `status` | Camera state (with `orientation` and `rotation`) and the phone's URL |
+| `snapshot` | Optionally adjusts the camera (zoom, `pan`, focus, lock, ev), waits `settle_ms` for focus, takes the picture, turns it upright, optionally crops (`[x, y, w, h]` fractions of the upright picture) and scales (`max_dim`, default 2560), saves a JPEG and returns its **path**, with `orientation`, `rotated_deg` and `viewport` (what the picture covers of the lens's frame). `full_frame=True` takes the lens's whole frame, to see where to pan; `upright=False` keeps the raw sensor frame and coordinates |
+| `set_camera` | Zoom, `pan` (`[x, y]`, the view's centre), focus point (in the picture), focus lock, exposure bias; upright coordinates unless `upright=False` |
+| `status` | Camera state (with `orientation`, `rotation`, `opticalZoom`, `pan` and `viewport`, upright by default) and the phone's URL |
 
 `snapshot` returns a path rather than image content because `meta-mcp`
 flattens results to text. Claude reads the file to see it. To read small text,

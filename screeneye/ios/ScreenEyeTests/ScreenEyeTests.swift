@@ -46,7 +46,8 @@ final class FrameMetaTests: XCTestCase {
                           taken: "2026-10-16T14:03:22+01:00", orientation: "portraitUpsideDown", rotation: 270)
         let o = try object(m)
         XCTAssertEqual(Set(o.keys), ["zoom", "lens", "ev", "focus", "lensPosition", "note", "device", "taken",
-                                     "orientation", "rotation"])
+                                     "orientation", "rotation", "opticalZoom", "frame", "crop"])
+        XCTAssertTrue(o["frame"] is NSNull && o["crop"] is NSNull)
         XCTAssertEqual(o["orientation"] as? String, "portraitUpsideDown")
         XCTAssertEqual(o["rotation"] as? Int, 270)
         XCTAssertEqual(o["zoom"] as? Double, 2.5)
@@ -241,5 +242,164 @@ final class OrientationTests: XCTestCase {
         try check(90, width: 1, ["R", "B"])   // red on top
         try check(180, width: 2, ["B", "R"])
         try check(270, width: 1, ["B", "R"])  // red at the bottom
+    }
+}
+
+final class FrameMathTests: XCTestCase {
+    private func assertPoint(_ p: CGPoint, _ x: Double, _ y: Double, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(p.x, x, accuracy: 1e-9, file: file, line: line)
+        XCTAssertEqual(p.y, y, accuracy: 1e-9, file: file, line: line)
+    }
+
+    func testTurnedMatchesTheImageTurn() {
+        // The raw top-left corner goes where EYE-3's clockwise image turn puts it.
+        let tl = CGPoint(x: 0, y: 0)
+        assertPoint(FrameMath.turned(tl, rotation: 0), 0, 0)
+        assertPoint(FrameMath.turned(tl, rotation: 90), 1, 0)   // top right
+        assertPoint(FrameMath.turned(tl, rotation: 180), 1, 1)  // bottom right
+        assertPoint(FrameMath.turned(tl, rotation: 270), 0, 1)  // bottom left
+    }
+
+    func testRawUndoesTurned() {
+        let p = CGPoint(x: 0.2, y: 0.7)
+        for r in [0, 90, 180, 270] {
+            let back = FrameMath.raw(FrameMath.turned(p, rotation: r), rotation: r)
+            assertPoint(back, 0.2, 0.7)
+        }
+    }
+
+    func testRects() {
+        let r = CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.4)
+        XCTAssertEqual(FrameMath.turned(r, rotation: 90).minX, 0.4, accuracy: 1e-9)  // 1 - (0.2 + 0.4)
+        XCTAssertEqual(FrameMath.turned(r, rotation: 90).minY, 0.1, accuracy: 1e-9)
+        XCTAssertEqual(FrameMath.turned(r, rotation: 90).width, 0.4, accuracy: 1e-9)
+        XCTAssertEqual(FrameMath.turned(r, rotation: 180).minX, 0.6, accuracy: 1e-9)
+        let same = FrameMath.turned(r, rotation: 0)
+        for (got, want) in [(same.minX, 0.1), (same.minY, 0.2), (same.width, 0.3), (same.height, 0.4)] {
+            XCTAssertEqual(got, want, accuracy: 1e-9)
+        }
+    }
+
+    func testVectors() {
+        let v = FrameMath.rawVector(CGVector(dx: -0.05, dy: 0), rotation: 90)
+        XCTAssertEqual(v.dx, 0, accuracy: 1e-9)
+        XCTAssertEqual(v.dy, 0.05, accuracy: 1e-9)
+        let w = FrameMath.rawVector(CGVector(dx: 0.1, dy: 0.2), rotation: 180)
+        XCTAssertEqual(w.dx, -0.1, accuracy: 1e-9)
+        XCTAssertEqual(w.dy, -0.2, accuracy: 1e-9)
+    }
+}
+
+final class ViewportTests: XCTestCase {
+    let lenses = [0.5, 1, 2, 4]
+
+    func testOpticalIsTheLensAtOrBelow() {
+        XCTAssertEqual(ViewportMath.optical(for: 0.3, lenses: lenses), 0.5)
+        XCTAssertEqual(ViewportMath.optical(for: 0.9, lenses: lenses), 0.5)
+        XCTAssertEqual(ViewportMath.optical(for: 1, lenses: lenses), 1)
+        XCTAssertEqual(ViewportMath.optical(for: 0.9999, lenses: lenses), 1)  // rounding slack
+        XCTAssertEqual(ViewportMath.optical(for: 3.9, lenses: lenses), 2)
+        XCTAssertEqual(ViewportMath.optical(for: 25, lenses: [4, 1, 0.5]), 4)  // order doesn't matter
+        XCTAssertEqual(ViewportMath.optical(for: 3, lenses: []), 3)
+    }
+
+    func testMakeClampsZoomAndCentre() {
+        let v = ViewportMath.make(zoom: 8, center: CGPoint(x: 0.1, y: 0.9), lenses: lenses, min: 0.5, max: 60)
+        XCTAssertEqual(v.optical, 4)
+        XCTAssertEqual(v.digital, 2)
+        XCTAssertEqual(v.center, CGPoint(x: 0.25, y: 0.75))  // the half-size crop stays in the frame
+        XCTAssertEqual(v.rect, CGRect(x: 0, y: 0.5, width: 0.5, height: 0.5))
+        XCTAssertEqual(ViewportMath.make(zoom: 100, center: .zero, lenses: lenses, min: 0.5, max: 60).zoom, 60)
+        XCTAssertEqual(ViewportMath.make(zoom: 0.1, center: .zero, lenses: lenses, min: 0.5, max: 60).zoom, 0.5)
+    }
+
+    func testAtALensThereIsNoCropAndNoPan() {
+        let v = ViewportMath.make(zoom: 2, center: CGPoint(x: 0.9, y: 0.1), lenses: lenses, min: 0.5, max: 60)
+        XCTAssertEqual(v.digital, 1)
+        XCTAssertEqual(v.rect, CGRect(x: 0, y: 0, width: 1, height: 1))
+    }
+
+    func testFramePoint() {
+        let v = Viewport(zoom: 8, optical: 2, center: CGPoint(x: 0.5, y: 0.25))  // quarter-size crop
+        let p = v.framePoint(CGPoint(x: 0, y: 1))
+        XCTAssertEqual(p.x, 0.375, accuracy: 1e-9)
+        XCTAssertEqual(p.y, 0.375, accuracy: 1e-9)
+    }
+
+    func testPreviewTransformPutsTheViewportCentreInTheMiddle() {
+        let shown = CGSize(width: 1600, height: 900)
+        let centred = ViewportMath.previewTransform(Viewport(zoom: 4, optical: 2), angle: 0, shown: shown)
+        XCTAssertEqual(centred, CGAffineTransform(scaleX: 2, y: 2))
+        let v = Viewport(zoom: 4, optical: 2, center: CGPoint(x: 0.25, y: 0.25))
+        let t = ViewportMath.previewTransform(v, angle: 0, shown: shown)
+        // The viewport's centre, (-400, -225) from the preview's centre, lands on it.
+        let p = CGPoint(x: -400, y: -225).applying(t)
+        XCTAssertEqual(p.x, 0, accuracy: 1e-9)
+        XCTAssertEqual(p.y, 0, accuracy: 1e-9)
+        // In portrait the raw top-left quarter shows at the top right.
+        let shownPortrait = CGSize(width: 900, height: 1600)
+        let tp = ViewportMath.previewTransform(v, angle: 90, shown: shownPortrait)
+        let q = CGPoint(x: 225, y: -400).applying(tp)
+        XCTAssertEqual(q.x, 0, accuracy: 1e-9)
+        XCTAssertEqual(q.y, 0, accuracy: 1e-9)
+    }
+
+    func testDraggingMovesThePictureWithTheFinger() {
+        let shown = CGSize(width: 1000, height: 500)
+        let c = CGPoint(x: 0.5, y: 0.5)
+        // Landscape: drag right 100 pt at 2x digital: the centre moves left 5%.
+        let a = ViewportMath.dragged(from: c, translation: CGSize(width: 100, height: 0), angle: 0, shown: shown, digital: 2)
+        XCTAssertEqual(a.x, 0.45, accuracy: 1e-9)
+        XCTAssertEqual(a.y, 0.5, accuracy: 1e-9)
+        // Portrait (the raw frame turned 90°): screen left/right is raw down/up.
+        let b = ViewportMath.dragged(from: c, translation: CGSize(width: 100, height: 0), angle: 90,
+                                     shown: CGSize(width: 1000, height: 1000), digital: 2)
+        XCTAssertEqual(b.x, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(b.y, 0.55, accuracy: 1e-9)
+    }
+
+    func testFitted() {
+        XCTAssertEqual(ViewportMath.fitted(aspect: 16.0 / 9.0, in: CGSize(width: 1600, height: 2000)),
+                       CGSize(width: 1600, height: 900))
+        XCTAssertEqual(ViewportMath.fitted(aspect: 9.0 / 16.0, in: CGSize(width: 2000, height: 1600)),
+                       CGSize(width: 900, height: 1600))
+        XCTAssertEqual(ViewportMath.shownAspect(raw: 2, angle: 270), 0.5)
+    }
+
+    func testPreviewAngles() {
+        XCTAssertEqual(ViewportMath.previewAngle(.landscapeRight), 0)
+        XCTAssertEqual(ViewportMath.previewAngle(.portrait), 90)
+        XCTAssertEqual(ViewportMath.previewAngle(.landscapeLeft), 180)
+        XCTAssertEqual(ViewportMath.previewAngle(.portraitUpsideDown), 270)
+        XCTAssertEqual(ViewportMath.previewAngle(nil), 90)
+    }
+}
+
+final class CameraHelperTests: XCTestCase {
+    func testPointParsing() {
+        XCTAssertEqual(Camera.point("0.25, 0.75"), CGPoint(x: 0.25, y: 0.75))
+        XCTAssertNil(Camera.point("0.25"))
+        XCTAssertNil(Camera.point("nan,0"))
+        XCTAssertNil(Camera.point(nil))
+        XCTAssertTrue(Camera.flag("1") && Camera.flag("True") && !Camera.flag("0") && !Camera.flag(nil))
+    }
+
+    /// The crop is measured from the top-left, though Core Image's origin is the bottom-left.
+    func testCropFromTheTopLeft() throws {
+        // 400×200: red top-left 100×50 (Core Image y 150…200), blue elsewhere.
+        let blue = CIImage(color: .blue).cropped(to: CGRect(x: 0, y: 0, width: 400, height: 200))
+        let red = CIImage(color: .red).cropped(to: CGRect(x: 0, y: 150, width: 100, height: 50))
+        let img = red.composited(over: blue)
+        let out = Camera.crop(img, to: CGRect(x: 0, y: 0, width: 0.25, height: 0.25))
+        XCTAssertEqual(out.extent, CGRect(x: 0, y: 0, width: 100, height: 50))
+        var px = [UInt8](repeating: 0, count: 4)
+        CIContext().render(out, toBitmap: &px, rowBytes: 4, bounds: CGRect(x: 50, y: 25, width: 1, height: 1),
+                           format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+        XCTAssertGreaterThan(px[0], 200)
+        XCTAssertLessThan(px[2], 60)
+        let bottomRight = Camera.crop(img, to: CGRect(x: 0.75, y: 0.75, width: 0.25, height: 0.25))
+        CIContext().render(bottomRight, toBitmap: &px, rowBytes: 4, bounds: CGRect(x: 50, y: 25, width: 1, height: 1),
+                           format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+        XCTAssertGreaterThan(px[2], 200)
     }
 }
