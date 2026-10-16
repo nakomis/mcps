@@ -11,7 +11,7 @@ import anyio
 
 from . import tracelog
 from .providers import anthropic, azure, bedrock, gemini
-from .providers.base import Reply
+from .providers.base import Reply, error_reply
 
 # The default cabal: the working frontier set (audited 2026-07-02).
 DEFAULT_PROVIDERS = [
@@ -55,46 +55,64 @@ def _slug(s: str, n: int = 40) -> str:
     return s[:n] or "unnamed"
 
 
-async def _ask_one(spec: str, prompt: str, system: str | None) -> Reply:
+async def _ask_one(
+    spec: str, prompt: str, system: str | None, max_tokens: int | None = None,
+) -> Reply:
+    """Ask one provider. Never raises (bar cancellation): any unexpected
+    exception becomes an error Reply for this provider alone, so one bad
+    provider can't take down the whole fan-out."""
     log = tracelog.current()
     provider, _, model = spec.partition(":")
-    log.log("provider.start", spec=spec, provider=provider, model=model)
     try:
+        log.log("provider.start", spec=spec, provider=provider, model=model)
         if provider == "bedrock":
-            r = await bedrock.ask(prompt, model=model, system=system)
+            r = await bedrock.ask(prompt, model=model, system=system, max_tokens=max_tokens)
         elif provider == "azure":
-            r = await azure.ask(prompt, model=model, system=system)
+            r = await azure.ask(prompt, model=model, system=system, max_tokens=max_tokens)
         elif provider == "gemini":
-            r = await gemini.ask(prompt, model=model, system=system)
+            r = await gemini.ask(prompt, model=model, system=system, max_tokens=max_tokens)
         elif provider == "anthropic":
-            r = await anthropic.ask(prompt, model=model, system=system)
+            r = await anthropic.ask(prompt, model=model, system=system, max_tokens=max_tokens)
         else:
-            r = Reply(
-                provider=spec, response="", input_tokens=0, output_tokens=0,
-                cost_usd=None, latency_ms=0,
-                error=f"unknown provider '{provider}' in spec '{spec}'",
+            r = error_reply(spec, f"unknown provider '{provider}' in spec '{spec}'")
+        if r.error:
+            log.log(
+                "provider.error",
+                spec=spec, error=r.error, latency_ms=r.latency_ms,
             )
-    except BaseException as e:
+        else:
+            log.log(
+                "provider.ok",
+                spec=spec,
+                input_tokens=r.input_tokens,
+                output_tokens=r.output_tokens,
+                cost_usd=r.cost_usd,
+                latency_ms=r.latency_ms,
+                notes=r.notes,
+            )
+        return r
+    except Exception as e:
         # Providers normally catch their own exceptions and stuff them into
-        # Reply.error, but if one ever escapes we want the full traceback in
-        # the trace log rather than a silent task-group crash.
+        # Reply.error; if one escapes, log the full traceback and turn it
+        # into an error result for this provider only.
         log.exception("provider.uncaught", e, spec=spec)
-        raise
-    if r.error:
-        log.log(
-            "provider.error",
-            spec=spec, error=r.error, latency_ms=r.latency_ms,
-        )
-    else:
-        log.log(
-            "provider.ok",
-            spec=spec,
-            input_tokens=r.input_tokens,
-            output_tokens=r.output_tokens,
-            cost_usd=r.cost_usd,
-            latency_ms=r.latency_ms,
-        )
-    return r
+        return error_reply(spec, f"{type(e).__name__}: {e}")
+
+
+def _cost_summary(results: list[Reply]) -> tuple[float, list[str]]:
+    """Return (total of the known costs, providers whose cost is unknown).
+
+    Errored calls count as unknown only if they reported token usage; a call
+    that failed before reaching the model costs nothing worth flagging.
+    """
+    total = 0.0
+    unknown: list[str] = []
+    for r in results:
+        if r.cost_usd is not None:
+            total += r.cost_usd
+        elif not r.error or r.input_tokens or r.output_tokens:
+            unknown.append(r.provider)
+    return total, unknown
 
 
 async def ask_all(
@@ -105,6 +123,7 @@ async def ask_all(
     save_dir: str | None = None,
     save_slug: str | None = None,
     bluntness: bool = True,
+    max_tokens: int | None = None,
 ) -> dict:
     """Fan out `prompt` across the given providers in parallel.
 
@@ -115,6 +134,12 @@ async def ask_all(
     If `bluntness` is True (the default), `BLUNTNESS_PREAMBLE` is prepended to
     the system prompt — licences disagreement and asks for falsification over
     hedging. Set False for tasks where the agreeable default is what you want.
+
+    `max_tokens` caps each provider's answer; None keeps each provider's
+    default (4096). Values above a model's hard maximum are clamped to it,
+    with a note on that provider's result. Thinking models (Gemini Pro,
+    Fable) spend hidden reasoning tokens from the same budget, so give them
+    ~16–32k.
     """
     specs = providers or DEFAULT_PROVIDERS
     if bluntness:
@@ -127,6 +152,7 @@ async def ask_all(
         has_system=system is not None,
         system_chars=len(system) if system else 0,
         bluntness=bluntness,
+        max_tokens=max_tokens,
         save_dir=save_dir,
     )
     results: list[Reply] = [None] * len(specs)  # type: ignore[list-item]
@@ -134,7 +160,7 @@ async def ask_all(
     try:
         async with anyio.create_task_group() as tg:
             async def runner(i: int, spec: str) -> None:
-                results[i] = await _ask_one(spec, prompt, system)
+                results[i] = await _ask_one(spec, prompt, system, max_tokens)
             for i, spec in enumerate(specs):
                 tg.start_soon(runner, i, spec)
     except BaseException as e:
@@ -150,13 +176,14 @@ async def ask_all(
             log.exception("persist.failed", e, save_dir=save_dir)
             raise
 
-    total_cost = sum((r.cost_usd or 0.0) for r in results)
+    total_cost, unknown_cost = _cost_summary(results)
     error_count = sum(1 for r in results if r.error)
     log.log(
         "call.end",
         providers=len(specs),
         errors=error_count,
         total_cost_usd=round(total_cost, 6),
+        cost_unknown_for=unknown_cost,
     )
 
     return {
@@ -170,10 +197,15 @@ async def ask_all(
                 "cost_usd": r.cost_usd,
                 "latency_ms": r.latency_ms,
                 "error": r.error,
+                "notes": r.notes,
             }
             for r in results
         ],
+        # Sum of the known costs only; if `total_cost_incomplete` is True,
+        # the providers in `cost_unknown_for` are missing from it.
         "total_cost_usd": round(total_cost, 6),
+        "total_cost_incomplete": bool(unknown_cost),
+        "cost_unknown_for": unknown_cost,
         "saved_files": saved,
     }
 
@@ -206,18 +238,24 @@ def _persist(
     return files
 
 
+def _fmt_tok(n: int | None) -> str:
+    return "?" if n is None else str(n)
+
+
 def _render_provider_md(r: Reply, prompt: str, system: str | None) -> str:
     sys_block = f"\n\n**System prompt:**\n\n```\n{system}\n```\n" if system else ""
     err_block = f"\n\n> ⚠ **Error:** `{r.error}`\n" if r.error else ""
     cost_block = (
         f"- Cost: ${r.cost_usd:.6f} USD\n" if r.cost_usd is not None
-        else "- Cost: (no pricing entry for this model)\n"
+        else "- Cost: unknown\n"
     )
+    notes_block = "".join(f"- Note: {n}\n" for n in r.notes)
     return (
         f"# Cabal consultation — {r.provider}\n\n"
-        f"- Tokens: {r.input_tokens} in / {r.output_tokens} out\n"
+        f"- Tokens: {_fmt_tok(r.input_tokens)} in / {_fmt_tok(r.output_tokens)} out\n"
         f"{cost_block}"
         f"- Latency: {r.latency_ms} ms\n"
+        f"{notes_block}"
         f"{err_block}\n"
         f"## Prompt\n\n```\n{prompt}\n```\n"
         f"{sys_block}\n"
@@ -233,10 +271,16 @@ def _render_summary_md(
         cost_s = f"${r.cost_usd:.6f}" if r.cost_usd is not None else "—"
         err_s = "✓" if not r.error else f"⚠ {r.error[:40]}"
         rows.append(
-            f"| `{r.provider}` | {r.input_tokens} | {r.output_tokens} | "
+            f"| `{r.provider}` | {_fmt_tok(r.input_tokens)} | {_fmt_tok(r.output_tokens)} | "
             f"{cost_s} | {r.latency_ms} ms | {err_s} |"
         )
-    total = sum((r.cost_usd or 0.0) for r in results)
+    total, unknown = _cost_summary(results)
+    total_line = f"**Total cost: ${total:.6f} USD**"
+    if unknown:
+        total_line += (
+            " (known costs only; unknown for "
+            + ", ".join(f"`{p}`" for p in unknown) + ")"
+        )
     file_list = "\n".join(f"- `{f}`" for f in files)
     sys_block = f"\n\n**System prompt:**\n\n```\n{system}\n```" if system else ""
     return (
@@ -246,6 +290,6 @@ def _render_summary_md(
         f"| Provider | Input tokens | Output tokens | Cost (USD) | Latency | Status |\n"
         f"|---|---:|---:|---:|---:|---|\n"
         + "\n".join(rows)
-        + f"\n\n**Total cost: ${total:.6f} USD**\n\n"
+        + f"\n\n{total_line}\n\n"
         f"## Files\n\n{file_list}\n"
     )

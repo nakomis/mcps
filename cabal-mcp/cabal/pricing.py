@@ -51,8 +51,18 @@ PRICING: dict[str, Price] = {
 }
 
 
-def cost(model_id: str, input_tokens: int, output_tokens: int) -> float | None:
+def cost(
+    model_id: str, input_tokens: int | None, output_tokens: int | None,
+) -> float | None:
+    """USD cost of a call, or None if it can't be known.
+
+    None when the model has no pricing entry, or when the provider didn't
+    report a token count (Gemini sometimes returns `None`). A missing count
+    is unknown, not zero, so it must not be priced as zero.
+    """
     p = PRICING.get(model_id)
     if p is None:
+        return None
+    if not isinstance(input_tokens, (int, float)) or not isinstance(output_tokens, (int, float)):
         return None
     return p.cost(input_tokens, output_tokens)
