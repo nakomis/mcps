@@ -21,12 +21,33 @@ If you find this useful, please consider buying me a coffee:
 
 | Endpoint | Does |
 |---|---|
-| `GET /snapshot.jpg` | Latest frame |
+| `GET /snapshot.jpg` | Latest frame, raw. Headers `X-ScreenEye-Orientation` and `X-ScreenEye-Rotation` say which way up the phone was |
+| `GET /snapshot.jpg?upright=1` | The same frame turned upright (`X-ScreenEye-Rotation` is then `0`) |
 | `GET /set?zoom=4&focus=0.5,0.5&lock=1&ev=-1` | Zoom (multiple of the 1x lens), focus/exposure point, focus lock, exposure bias. Any subset |
-| `GET /status` | JSON: `zoom`, `maxZoom`, `lens`, `focusMode`, `lensPosition`, `ev` |
+| `GET /status` | JSON: `zoom`, `maxZoom`, `lens`, `focusMode`, `lensPosition`, `ev`, `orientation`, `rotation` |
 
-Snapshots are in the sensor's native landscape orientation whatever way up the
-phone is.
+### Orientation
+
+`/snapshot.jpg` is in the sensor's native landscape whatever way up the phone
+is, for compatibility: upright only when the phone is in landscape with its top
+to the left. The app follows gravity with CoreMotion, which works with the
+screen's rotation locked, and reports:
+
+- `orientation`: `portrait`, `portraitUpsideDown`, `landscapeLeft` (top to the
+  left), `landscapeRight`, `faceUp`, `faceDown`, or `unknown` before the first
+  reading (and on the simulator).
+- `rotation`: how far to turn a raw frame **clockwise** to make it upright: `0`
+  (`landscapeLeft`), `90` (`portrait`), `180` (`landscapeRight`), `270`
+  (`portraitUpsideDown`).
+
+Lying flat (within about 30° of face up or face down), gravity can't say which
+way is up in the picture, so `rotation` **keeps its last value**: a phone
+tipped down over a desk or a print bed was usually upright a moment before.
+It's `0` if the phone has been flat since the app started. Near a 45°
+diagonal, the orientation only changes once the phone is 10° past it, so it
+doesn't flicker.
+
+`focus=x,y` (and the MCP's `focus_x`, `focus_y`) are always in the raw frame.
 
 ## On the phone
 
@@ -44,7 +65,9 @@ The push is `POST {host}/api/frames`, `multipart/form-data`:
 | Field | Contents |
 |---|---|
 | `image` | `image/jpeg`, filename `frame.jpg` |
-| `meta` | JSON: `{"zoom": n, "lens": "…", "ev": n, "focus": [x, y] \| null, "lensPosition": n, "note": "…" \| null, "device": "…", "taken": "<ISO 8601 with offset>"}` |
+| `meta` | JSON: `{"zoom": n, "lens": "…", "ev": n, "focus": [x, y] \| null, "lensPosition": n, "note": "…" \| null, "device": "…", "taken": "<ISO 8601 with offset>", "orientation": "…", "rotation": 0 \| 90 \| 180 \| 270}` |
+
+The image is raw; the host turns it upright using `rotation`.
 
 `focus` is the last point set with `/set?focus=`, or `null`. The host replies
 `201` with `{"name": "HHMMSS-note.jpg", "path": "screeneye/YYYY-MM-DD/HHMMSS-note.jpg"}`,
@@ -62,9 +85,9 @@ xcodebuild -project ScreenEye.xcodeproj -scheme ScreenEye \
 
 | Tool | Does |
 |---|---|
-| `snapshot` | Optionally adjusts the camera, waits `settle_ms` for focus, takes a frame, optionally crops (`[x, y, w, h]` fractions) and scales (`max_dim`, default 2560), saves a JPEG and returns its **path** |
+| `snapshot` | Optionally adjusts the camera, waits `settle_ms` for focus, takes a frame, turns it upright, optionally crops (`[x, y, w, h]` fractions of the upright frame) and scales (`max_dim`, default 2560), saves a JPEG and returns its **path**, with `orientation` and `rotated_deg`. `upright=False` keeps the raw sensor frame |
 | `set_camera` | Zoom, focus point, focus lock, exposure bias |
-| `status` | Camera state and the phone's URL |
+| `status` | Camera state (with `orientation` and `rotation`) and the phone's URL |
 
 `snapshot` returns a path rather than image content because `meta-mcp`
 flattens results to text. Claude reads the file to see it. To read small text,
@@ -111,7 +134,7 @@ app's Save button pushes and files them on the share:
 
 | Endpoint | Does |
 |---|---|
-| `POST /api/frames` | `multipart/form-data`: `image` (`image/jpeg`) and `meta` (a JSON object: zoom, lens, ev, focus, lensPosition, note, device, taken). Writes `screeneye/YYYY-MM-DD/HHMMSS[-note].jpg` and a `.json` sidecar (the meta, plus `received`, `client`, `bytes`, `name`), never overwriting (`-2`, `-3`, ...). Replies `201 {"name", "path"}` or `{"error"}` with 4xx/5xx; non-JPEGs get 415, anything over 30 MiB 413 |
+| `POST /api/frames` | `multipart/form-data`: `image` (`image/jpeg`) and `meta` (a JSON object: zoom, lens, ev, focus, lensPosition, note, device, taken, orientation, rotation). Turns the frame upright by `rotation` (clockwise; missing means 0, anything but 0/90/180/270 is a 400), keeping the JPEG's quality tables. Writes `screeneye/YYYY-MM-DD/HHMMSS[-note].jpg` and a `.json` sidecar (the meta, plus `received`, `client`, `bytes` (of the file written), `rotated_deg`, `name`; the meta's `rotation` is kept as the phone sent it, and the saved image has already been turned by `rotated_deg`), never overwriting (`-2`, `-3`, ...). Replies `201 {"name", "path"}` or `{"error"}` with 4xx/5xx; non-JPEGs get 415, anything over 30 MiB 413 |
 | `GET /health` | `{"ok": true, "root", "writable"}` |
 
 It listens on port 8090 and is advertised by the host's Avahi as

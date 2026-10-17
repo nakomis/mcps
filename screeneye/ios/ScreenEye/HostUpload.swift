@@ -11,9 +11,13 @@ struct FrameMeta: Encodable, Equatable, Sendable {
     var note: String?
     var device: String
     var taken: String
+    /// Which way up the phone was (`DeviceOrientation`'s raw value).
+    var orientation: String = DeviceOrientation.unknown.rawValue
+    /// Clockwise degrees that turn the (raw, sensor-landscape) image upright: 0, 90, 180 or 270.
+    var rotation: Int = 0
 
     private enum CodingKeys: String, CodingKey {
-        case zoom, lens, ev, focus, lensPosition, note, device, taken
+        case zoom, lens, ev, focus, lensPosition, note, device, taken, orientation, rotation
     }
 
     func encode(to encoder: Encoder) throws {
@@ -26,6 +30,8 @@ struct FrameMeta: Encodable, Equatable, Sendable {
         if let note { try c.encode(note, forKey: .note) } else { try c.encodeNil(forKey: .note) }
         try c.encode(device, forKey: .device)
         try c.encode(taken, forKey: .taken)
+        try c.encode(orientation, forKey: .orientation)
+        try c.encode(rotation, forKey: .rotation)
     }
 
     func json() throws -> Data {

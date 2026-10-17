@@ -4,7 +4,9 @@ on the share.
 
   POST /api/frames   multipart/form-data: `image` (JPEG) and `meta` (a JSON
                      object: zoom, lens, ev, focus, lensPosition, note, device,
-                     taken). Writes
+                     taken, orientation, rotation). A `rotation` of 90, 180
+                     or 270 (clockwise degrees) turns the frame upright
+                     before it is saved. Writes
                        <root>/screeneye/YYYY-MM-DD/HHMMSS[-note].jpg
                      and a .json sidecar beside it, never overwriting. Replies
                      201 {"name", "path"} (path relative to <root>), or
@@ -20,6 +22,7 @@ Environment variables:
   SCREENEYE_MAX_BYTES  Largest request accepted (default 30 MiB)
 """
 
+import io
 import json
 import logging
 import os
@@ -28,6 +31,8 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 
+from PIL import Image, JpegImagePlugin
+from PIL.Image import Transpose
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
@@ -50,6 +55,38 @@ def slugify(note: str | None) -> str:
     ascii_ = unicodedata.normalize("NFKD", note).encode("ascii", "ignore").decode()
     slug = re.sub(r"[^a-z0-9]+", "-", ascii_.lower()).strip("-")
     return slug[:_SLUG_MAX].rstrip("-")
+
+
+# Clockwise degrees -> the PIL transpose that turns an image that far
+# (PIL's ROTATE_* are anticlockwise).
+_CLOCKWISE = {90: Transpose.ROTATE_270, 180: Transpose.ROTATE_180, 270: Transpose.ROTATE_90}
+
+
+def rotation_of(meta: dict) -> int:
+    """The meta's `rotation` as 0, 90, 180 or 270. Missing or null (an app from
+    before EYE-3) is 0; anything else raises ValueError."""
+    r = meta.get("rotation")
+    if r is None:
+        return 0
+    if isinstance(r, bool) or not isinstance(r, (int, float)) or r not in (0, *_CLOCKWISE):
+        raise ValueError("`rotation` must be 0, 90, 180 or 270")
+    return int(r)
+
+
+def rotate_jpeg(image: bytes, rotation: int) -> bytes:
+    """The JPEG turned `rotation` degrees clockwise. Re-encoded with the
+    original's quantisation tables and chroma subsampling, so it keeps its
+    quality and roughly its size. 0 returns it untouched."""
+    t = _CLOCKWISE.get(rotation)
+    if t is None:
+        return image
+    with Image.open(io.BytesIO(image)) as src:
+        src.load()
+        out = io.BytesIO()
+        extra = {k: src.info[k] for k in ("icc_profile", "dpi") if k in src.info}
+        src.transpose(t).save(out, "JPEG", qtables=src.quantization,
+                              subsampling=JpegImagePlugin.get_sampling(src), **extra)
+    return out.getvalue()
 
 
 def save_frame(root: Path, image: bytes, sidecar: dict, note: str | None,
@@ -141,8 +178,19 @@ async def post_frame(request: Request) -> JSONResponse:
             return _error(400, f"`meta` is not valid JSON: {e}")
         if not isinstance(meta, dict):
             return _error(400, "`meta` must be a JSON object")
+        try:
+            rotation = rotation_of(meta)
+        except ValueError as e:
+            return _error(400, str(e))
     finally:
         await form.close()
+
+    received = len(image)
+    try:
+        # Off the event loop: decoding and encoding a 4K frame takes a moment.
+        image = await run_in_threadpool(rotate_jpeg, image, rotation)
+    except (OSError, ValueError, Image.DecompressionBombError) as e:
+        return _error(400, f"`image` could not be decoded to rotate it: {e}")
 
     now = datetime.now().astimezone()
     sidecar = {
@@ -150,6 +198,7 @@ async def post_frame(request: Request) -> JSONResponse:
         "received": now.isoformat(timespec="seconds"),
         "client": request.client.host if request.client else None,
         "bytes": len(image),
+        "rotated_deg": rotation,
     }
     note = meta.get("note") if isinstance(meta.get("note"), str) else None
     try:
@@ -159,7 +208,7 @@ async def post_frame(request: Request) -> JSONResponse:
         log.exception("could not save frame")
         return _error(503, f"could not save the frame: {e.strerror or e}")
     rel = jpg.relative_to(cfg.root).as_posix()
-    log.info("saved %s (%d bytes) from %s", rel, len(image), sidecar["client"])
+    log.info("saved %s (%d bytes received, rotated %d°) from %s", rel, received, rotation, sidecar["client"])
     return JSONResponse({"name": jpg.name, "path": rel}, status_code=201)
 
 
