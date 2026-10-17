@@ -36,13 +36,41 @@ mimics Copilot's framing.
 
 | Tool | Purpose |
 |---|---|
-| `ask_all(prompt, providers=, system=, save_dir=, save_slug=)` | Fan out to multiple providers in parallel, return all responses + costs. |
-| `ask_bedrock(prompt, model="mistral-large", system=)` | Single Bedrock call. |
-| `ask_azure(prompt, model="gpt-4o", system=)` | Single Azure Foundry call. |
-| `ask_gemini(prompt, model="gemini-3-pro", system=)` | Single Gemini call. |
-| `ask_anthropic(prompt, model="opus-4.7", system=)` | Single Anthropic Claude call. |
+| `ask_all(prompt, providers=, system=, save_dir=, save_slug=, bluntness=, max_tokens=)` | Fan out to multiple providers in parallel, return all responses + costs. |
+| `ask_bedrock(prompt, model="mistral-large", system=, max_tokens=)` | Single Bedrock call. |
+| `ask_azure(prompt, model="gpt-4o", system=, max_tokens=)` | Single Azure Foundry call. |
+| `ask_gemini(prompt, model="gemini-3-pro", system=, max_tokens=)` | Single Gemini call. |
+| `ask_anthropic(prompt, model="opus-4.7", system=, max_tokens=)` | Single Anthropic Claude call. |
 | `list_providers()` | List configured provider:model specs. |
 | `check_secrets()` | Report which secrets are configured (without revealing values). |
+
+### `max_tokens`
+
+Every `ask_*` tool takes an optional `max_tokens`, the cap on each answer's
+length. Leave it unset (`None`) to keep the default of **4096** for every
+provider.
+
+**Thinking models need far more.** Gemini Pro and Fable reason before they
+answer, and that hidden reasoning counts against `max_tokens`: at 4096 they
+can spend the whole budget thinking and return a truncated or empty answer.
+Give them about **16000–32000**.
+
+A value above a model's hard maximum is clamped to that maximum rather than
+sent to fail, and the result's `notes` says so. Known maxima (checked
+17 Oct 2026):
+
+| Model | Max output tokens |
+|---|---:|
+| `bedrock:mistral-large` | 8,192 |
+| `bedrock:llama3-70b` | 4,096 (the schema says 8,192; the service rejects anything above 4,096) |
+| `bedrock:nova-pro` | 10,240 |
+| `bedrock:fable-5` | 128,000 |
+| `gemini:gemini-3.1-pro`, `gemini:gemini-3.5-flash` | 65,536 |
+| `anthropic:opus-4.7`, `anthropic:opus-4-8`, `anthropic:fable-5` | 128,000 |
+| `azure:*` | not clamped (Foundry accepted 1,000,000 for `grok-4.3`) |
+
+So a fan-out with `max_tokens=32000` gives Llama 4,096 and Mistral 8,192,
+with a note on each, and everything else 32,000.
 
 ## Secrets — Keychain primary, SSM backup
 
@@ -108,5 +136,21 @@ Quick refresh sources:
 
 Every consultation logs `input_tokens`, `output_tokens`, `cost_usd`, and
 `latency_ms` per provider. The per-call summary file written to `save_dir`
-includes a totals row. If "essentially free" stops being true, you'll see
+includes a totals row.
+
+If a provider reports no token count (Gemini sometimes returns `None`), its
+counts are `None`, its `cost_usd` is `None` and a note says why. The cost
+is unknown, not zero. `total_cost_usd` then sums only the known costs, and
+`total_cost_incomplete: true` with `cost_unknown_for` lists the providers
+left out. Gemini's thinking tokens are billed as output, so they are
+included in its `output_tokens`.
+
+## Tests
+
+```sh
+uv run pytest
+```
+
+The tests mock every SDK client; they make no network calls and need no
+secrets. If "essentially free" stops being true, you'll see
 it in the summary before you see it on the bill.

@@ -14,8 +14,7 @@ import time
 import anyio
 
 from .. import tracelog
-from ..pricing import cost
-from .base import Reply
+from .base import Reply, error_reply, ok_reply, resolve_max_tokens
 
 # Map our canonical short IDs to Bedrock's model IDs.
 MODELS = {
@@ -33,8 +32,25 @@ MODELS = {
     "fable-5":       "global.anthropic.claude-fable-5",
 }
 
+# Hard maximum output tokens per model, probed against eu-west-2 on
+# 2026-10-17 (anything above is a ValidationException). Llama 3 70B's schema
+# allows 8192 but the service rejects anything over 4096. Fable 5 thinks on
+# every request and its hidden reasoning counts against the limit.
+MAX_OUTPUT_TOKENS = {
+    "mistral-large": 8_192,
+    "llama3-70b":    4_096,
+    "nova-pro":      10_240,
+    "fable-5":       128_000,
+}
 
-def _build_request(model_short: str, prompt: str, system: str | None) -> dict:
+# Long answers (large max_tokens, thinking models) easily outlast botocore's
+# default 60 s read timeout.
+READ_TIMEOUT_S = 900
+
+
+def _build_request(
+    model_short: str, prompt: str, system: str | None, max_tokens: int,
+) -> dict:
     """Bedrock's body format varies by model family. Return the right one."""
     if model_short == "mistral-large":
         # Mistral uses an OpenAI-ish chat-completions body.
@@ -42,7 +58,7 @@ def _build_request(model_short: str, prompt: str, system: str | None) -> dict:
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-        return {"messages": messages, "max_tokens": 4096, "temperature": 0.7}
+        return {"messages": messages, "max_tokens": max_tokens, "temperature": 0.7}
     if model_short == "llama3-70b":
         sys_block = f"<|start_header_id|>system<|end_header_id|>\n{system}<|eot_id|>" if system else ""
         return {
@@ -51,13 +67,13 @@ def _build_request(model_short: str, prompt: str, system: str | None) -> dict:
                 f"<|start_header_id|>user<|end_header_id|>\n{prompt}<|eot_id|>"
                 f"<|start_header_id|>assistant<|end_header_id|>\n"
             ),
-            "max_gen_len": 4096,
+            "max_gen_len": max_tokens,
             "temperature": 0.7,
         }
     if model_short == "nova-pro":
         body = {
             "messages": [{"role": "user", "content": [{"text": prompt}]}],
-            "inferenceConfig": {"maxTokens": 4096, "temperature": 0.7},
+            "inferenceConfig": {"maxTokens": max_tokens, "temperature": 0.7},
         }
         if system:
             body["system"] = [{"text": system}]
@@ -67,7 +83,7 @@ def _build_request(model_short: str, prompt: str, system: str | None) -> dict:
         # `thinking` param or `temperature` gets a 400, so send neither.
         body = {
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 4096,
+            "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": prompt}],
         }
         if system:
@@ -80,15 +96,15 @@ def _parse_response(model_short: str, body: dict) -> tuple[str, int, int]:
     """Return (text, input_tokens, output_tokens)."""
     if model_short == "mistral-large":
         text = body["choices"][0]["message"]["content"]
-        usage = body.get("usage", {})
-        return text, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
+        usage = body.get("usage") or {}
+        return text, usage.get("prompt_tokens"), usage.get("completion_tokens")
     if model_short == "llama3-70b":
         text = body.get("generation", "")
-        return text, body.get("prompt_token_count", 0), body.get("generation_token_count", 0)
+        return text, body.get("prompt_token_count"), body.get("generation_token_count")
     if model_short == "nova-pro":
         text = body["output"]["message"]["content"][0]["text"]
-        usage = body.get("usage", {})
-        return text, usage.get("inputTokens", 0), usage.get("outputTokens", 0)
+        usage = body.get("usage") or {}
+        return text, usage.get("inputTokens"), usage.get("outputTokens")
     if model_short == "fable-5":
         if body.get("stop_reason") == "refusal":
             # Safety-classifier decline. Bedrock has no server-side fallback
@@ -102,23 +118,37 @@ def _parse_response(model_short: str, body: dict) -> tuple[str, int, int]:
             block.get("text", "") for block in body.get("content", [])
             if block.get("type") == "text"
         )
-        usage = body.get("usage", {})
-        return text, usage.get("input_tokens", 0), usage.get("output_tokens", 0)
+        usage = body.get("usage") or {}
+        return text, usage.get("input_tokens"), usage.get("output_tokens")
     raise ValueError(f"unknown Bedrock model: {model_short}")
 
 
-def _invoke_sync(model_short: str, prompt: str, system: str | None, region: str | None):
+def _invoke_sync(
+    model_short: str, prompt: str, system: str | None, region: str | None,
+    max_tokens: int,
+):
     import boto3
-    client = boto3.client("bedrock-runtime", region_name=region) if region \
-        else boto3.client("bedrock-runtime")
-    body = _build_request(model_short, prompt, system)
+    from botocore.config import Config
+
+    config = Config(read_timeout=READ_TIMEOUT_S)
+    client = boto3.client("bedrock-runtime", region_name=region, config=config) if region \
+        else boto3.client("bedrock-runtime", config=config)
+    body = _build_request(model_short, prompt, system, max_tokens)
     resp = client.invoke_model(
         modelId=MODELS[model_short],
         body=json.dumps(body),
         contentType="application/json",
         accept="application/json",
     )
-    return json.loads(resp["body"].read())
+    headers = (resp.get("ResponseMetadata") or {}).get("HTTPHeaders") or {}
+    return json.loads(resp["body"].read()), headers
+
+
+def _header_count(headers: dict, name: str) -> int | None:
+    try:
+        return int(headers[name])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 async def ask(
@@ -127,32 +157,30 @@ async def ask(
     model: str,
     system: str | None = None,
     region: str | None = None,
+    max_tokens: int | None = None,
 ) -> Reply:
     full_id = f"bedrock:{model}"
     if model not in MODELS:
-        return Reply(
-            provider=full_id, response="", input_tokens=0, output_tokens=0,
-            cost_usd=None, latency_ms=0,
-            error=f"unknown bedrock model '{model}'; known: {sorted(MODELS)}",
+        return error_reply(
+            full_id, f"unknown bedrock model '{model}'; known: {sorted(MODELS)}",
         )
     t0 = time.monotonic()
+    notes: list[str] = []
     try:
-        parsed = await anyio.to_thread.run_sync(
-            _invoke_sync, model, prompt, system, region,
+        mt, note = resolve_max_tokens(max_tokens, MAX_OUTPUT_TOKENS.get(model), full_id)
+        if note:
+            notes.append(note)
+        parsed, headers = await anyio.to_thread.run_sync(
+            _invoke_sync, model, prompt, system, region, mt,
         )
         text, in_tok, out_tok = _parse_response(model, parsed)
+        # Mistral's body carries no usage; Bedrock reports counts for every
+        # model in response headers, so fall back to those.
+        if in_tok is None:
+            in_tok = _header_count(headers, "x-amzn-bedrock-input-token-count")
+        if out_tok is None:
+            out_tok = _header_count(headers, "x-amzn-bedrock-output-token-count")
+        return ok_reply(full_id, text, in_tok, out_tok, t0, notes)
     except Exception as e:
         tracelog.current().exception("bedrock.ask.failed", e, model=model)
-        return Reply(
-            provider=full_id, response="", input_tokens=0, output_tokens=0,
-            cost_usd=None, latency_ms=int((time.monotonic() - t0) * 1000),
-            error=f"{type(e).__name__}: {e}",
-        )
-    return Reply(
-        provider=full_id,
-        response=text,
-        input_tokens=in_tok,
-        output_tokens=out_tok,
-        cost_usd=cost(full_id, in_tok, out_tok),
-        latency_ms=int((time.monotonic() - t0) * 1000),
-    )
+        return error_reply(full_id, f"{type(e).__name__}: {e}", t0, notes)

@@ -1,11 +1,12 @@
 """Cabal MCP server — convene a cabal of LLMs and compile their counsel.
 
 Exposes:
-  - ask_all(prompt, providers=None, system=None, save_dir=None, save_slug=None)
-  - ask_bedrock(prompt, model="mistral-large", system=None)
-  - ask_azure(prompt, model="gpt-4o", system=None)
-  - ask_gemini(prompt, model="gemini-3-pro", system=None)
-  - ask_anthropic(prompt, model="opus-4.7", system=None)
+  - ask_all(prompt, providers=None, system=None, save_dir=None, save_slug=None,
+            bluntness=True, max_tokens=None)
+  - ask_bedrock(prompt, model="mistral-large", system=None, max_tokens=None)
+  - ask_azure(prompt, model="gpt-4o", system=None, max_tokens=None)
+  - ask_gemini(prompt, model="gemini-3-pro", system=None, max_tokens=None)
+  - ask_anthropic(prompt, model="opus-4.7", system=None, max_tokens=None)
   - list_providers()
   - check_secrets()
 """
@@ -29,6 +30,7 @@ async def ask_all(
     save_dir: str | None = None,
     save_slug: str | None = None,
     bluntness: bool = True,
+    max_tokens: int | None = None,
 ) -> dict:
     """Fan a prompt out across multiple LLM providers in parallel.
 
@@ -44,10 +46,19 @@ async def ask_all(
         bluntness: if True (default), prepend a "be blunt / falsify, don't
             hedge / answer numbered questions in order" preamble to the system
             prompt. Set False when you actually want the agreeable default.
+        max_tokens: optional cap on the answer length in tokens. Default
+            (None) keeps each provider's usual 4096. Thinking models (Gemini
+            Pro, Fable) count their hidden reasoning against this, so give
+            them far more: about 16000–32000. A value above a model's hard
+            maximum is clamped to it, with a note in that result's `notes`.
 
     Returns:
-        Dict with `results` (one per provider), `total_cost_usd`, and
+        Dict with `results` (one per provider, each with `notes`),
+        `total_cost_usd`, `total_cost_incomplete` / `cost_unknown_for`, and
         `saved_files` (paths written, if save_dir was set).
+        `total_cost_usd` sums only the known costs: if a provider reported
+        no token count its `cost_usd` is None and it is listed in
+        `cost_unknown_for`.
 
     Failure modes the calling model should surface to the user verbatim:
       - If any Bedrock provider returns an error containing
@@ -67,6 +78,7 @@ async def ask_all(
         save_dir=save_dir,
         save_slug=save_slug,
         bluntness=bluntness,
+        max_tokens=max_tokens,
     )
 
 
@@ -75,6 +87,7 @@ async def ask_bedrock(
     prompt: str,
     model: str = "mistral-large",
     system: str | None = None,
+    max_tokens: int | None = None,
 ) -> dict:
     """Ask a single Bedrock-hosted model. See list_providers() for model names.
 
@@ -82,8 +95,13 @@ async def ask_bedrock(
     `UnauthorizedSSOTokenError` or an expired SSO session, the user's AWS SSO
     session has expired — tell the user to run `aws sso login` and then retry.
     Full tracebacks for any failure are written to /Volumes/lru/cabal-mcp/.
+
+    `max_tokens` caps the answer length; None keeps the default 4096.
+    Thinking models (Gemini Pro, Fable) need about 16000–32000 because hidden
+    reasoning counts against it. Values above the model's hard maximum are
+    clamped, with a note in `notes`.
     """
-    r = await bedrock.ask(prompt, model=model, system=system)
+    r = await bedrock.ask(prompt, model=model, system=system, max_tokens=max_tokens)
     return r.__dict__
 
 
@@ -92,9 +110,16 @@ async def ask_azure(
     prompt: str,
     model: str = "gpt-4o",
     system: str | None = None,
+    max_tokens: int | None = None,
 ) -> dict:
-    """Ask a single Azure Foundry-hosted model (e.g. gpt-4o, grok)."""
-    r = await azure.ask(prompt, model=model, system=system)
+    """Ask a single Azure Foundry-hosted model (e.g. gpt-4o, grok).
+
+    `max_tokens` caps the answer length; None keeps the default 4096.
+    Thinking models (Gemini Pro, Fable) need about 16000–32000 because hidden
+    reasoning counts against it. Values above the model's hard maximum are
+    clamped, with a note in `notes`.
+    """
+    r = await azure.ask(prompt, model=model, system=system, max_tokens=max_tokens)
     return r.__dict__
 
 
@@ -103,9 +128,16 @@ async def ask_gemini(
     prompt: str,
     model: str = "gemini-3-pro",
     system: str | None = None,
+    max_tokens: int | None = None,
 ) -> dict:
-    """Ask a single Google AI Studio model (gemini-3-pro or gemini-2-flash)."""
-    r = await gemini.ask(prompt, model=model, system=system)
+    """Ask a single Google AI Studio model (gemini-3-pro or gemini-2-flash).
+
+    `max_tokens` caps the answer length; None keeps the default 4096.
+    Thinking models (Gemini Pro, Fable) need about 16000–32000 because hidden
+    reasoning counts against it. Values above the model's hard maximum are
+    clamped, with a note in `notes`.
+    """
+    r = await gemini.ask(prompt, model=model, system=system, max_tokens=max_tokens)
     return r.__dict__
 
 
@@ -114,14 +146,20 @@ async def ask_anthropic(
     prompt: str,
     model: str = "opus-4.7",
     system: str | None = None,
+    max_tokens: int | None = None,
 ) -> dict:
     """Ask a single Anthropic Claude model directly (e.g. opus-4.7).
 
     Uses the `anthropic-api-key` secret. Note that the orchestrating agent is
     itself Claude — an independent Claude review is a deliberate, opt-in voice
     in the cabal, not the same thing as Claude orchestrating.
+
+    `max_tokens` caps the answer length; None keeps the default 4096.
+    Thinking models (Gemini Pro, Fable) need about 16000–32000 because hidden
+    reasoning counts against it. Values above the model's hard maximum are
+    clamped, with a note in `notes`.
     """
-    r = await anthropic.ask(prompt, model=model, system=system)
+    r = await anthropic.ask(prompt, model=model, system=system, max_tokens=max_tokens)
     return r.__dict__
 
 
