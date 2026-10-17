@@ -7,6 +7,7 @@ dependencies = [
     "starlette>=0.40",
     "uvicorn>=0.30",
     "python-multipart>=0.0.18",
+    "pillow>=10.0.0",
 ]
 
 [project.scripts]

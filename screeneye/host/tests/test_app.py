@@ -1,10 +1,12 @@
+import io
 import json
 from datetime import UTC, datetime
 
 import pytest
+from PIL import Image
 from starlette.testclient import TestClient
 
-from screeneye_host.app import create_app, save_frame, slugify
+from screeneye_host.app import create_app, rotate_jpeg, rotation_of, save_frame, slugify
 
 JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 64 + b"\xff\xd9"
 META = {"zoom": 2.5, "lens": "Back Camera", "ev": 0, "focus": [0.5, 0.5],
@@ -150,3 +152,84 @@ def test_failed_sidecar_removes_the_jpeg(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         save_frame(tmp_path, JPEG, {}, None, datetime(2026, 10, 16, 1, 2, 3))
     assert list((tmp_path / "screeneye" / "2026-10-16").iterdir()) == []
+
+
+def real_jpeg(size=(320, 180)) -> bytes:
+    """A decodable JPEG: white, with a red block in the top-left corner."""
+    img = Image.new("RGB", size, "white")
+    img.paste((255, 0, 0), (0, 0, 40, 40))
+    out = io.BytesIO()
+    img.save(out, "JPEG", quality=92)
+    return out.getvalue()
+
+
+def red_corner(data: bytes) -> tuple[str, tuple[int, int]]:
+    img = Image.open(io.BytesIO(data)).convert("RGB")
+    w, h = img.size
+    corners = {"tl": (5, 5), "tr": (w - 6, 5), "bl": (5, h - 6), "br": (w - 6, h - 6)}
+    red = [k for k, xy in corners.items() if img.getpixel(xy)[0] > 200 and img.getpixel(xy)[1] < 60]
+    assert len(red) == 1, red
+    return red[0], img.size
+
+
+@pytest.mark.parametrize("rotation,corner,size", [
+    (0, "tl", (320, 180)), (90, "tr", (180, 320)), (180, "br", (320, 180)), (270, "bl", (180, 320)),
+])
+def test_rotate_jpeg_is_clockwise(rotation, corner, size):
+    assert red_corner(rotate_jpeg(real_jpeg(), rotation)) == (corner, size)
+
+
+def test_rotate_jpeg_keeps_quality():
+    src = real_jpeg()
+    out = rotate_jpeg(src, 180)
+    assert Image.open(io.BytesIO(out)).quantization == Image.open(io.BytesIO(src)).quantization
+    assert rotate_jpeg(src, 0) is src  # untouched, not re-encoded
+
+
+@pytest.mark.parametrize("meta,want", [
+    ({}, 0), ({"rotation": None}, 0), ({"rotation": 0}, 0), ({"rotation": 90}, 90),
+    ({"rotation": 180.0}, 180), ({"rotation": 270}, 270),
+])
+def test_rotation_of(meta, want):
+    assert rotation_of(meta) == want
+
+
+@pytest.mark.parametrize("bad", [45, 360, -90, "90", True, [90]])
+def test_rotation_of_refuses_others(bad):
+    with pytest.raises(ValueError):
+        rotation_of({"rotation": bad})
+
+
+def test_post_rotates_upright_and_records_it(client, tmp_path):
+    r = post(client, image=real_jpeg(), meta={**META, "orientation": "landscapeRight", "rotation": 180})
+    assert r.status_code == 201, r.text
+    jpg = tmp_path / r.json()["path"]
+    assert red_corner(jpg.read_bytes()) == ("br", (320, 180))
+    side = json.loads(jpg.with_suffix(".json").read_text())
+    assert (side["orientation"], side["rotation"], side["rotated_deg"]) == ("landscapeRight", 180, 180)
+    assert side["bytes"] == jpg.stat().st_size
+
+
+def test_post_portrait_turns_a_quarter(client, tmp_path):
+    r = post(client, image=real_jpeg(), meta={**META, "orientation": "portrait", "rotation": 90})
+    assert r.status_code == 201, r.text
+    assert red_corner((tmp_path / r.json()["path"]).read_bytes()) == ("tr", (180, 320))
+
+
+def test_post_without_rotation_is_stored_as_sent(client, tmp_path):
+    r = post(client)  # META has no rotation: an app from before EYE-3
+    jpg = tmp_path / r.json()["path"]
+    assert jpg.read_bytes() == JPEG
+    assert json.loads(jpg.with_suffix(".json").read_text())["rotated_deg"] == 0
+
+
+def test_post_bad_rotation_is_400(client, tmp_path):
+    r = post(client, image=real_jpeg(), meta={**META, "rotation": 45})
+    assert r.status_code == 400 and "rotation" in r.json()["error"]
+    assert not (tmp_path / "screeneye").exists()
+
+
+def test_post_undecodable_jpeg_to_rotate_is_400(client, tmp_path):
+    r = post(client, meta={**META, "rotation": 90})  # JPEG magic, but no picture
+    assert r.status_code == 400 and "error" in r.json()
+    assert not (tmp_path / "screeneye").exists()

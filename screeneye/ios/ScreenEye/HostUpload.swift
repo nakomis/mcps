@@ -11,9 +11,20 @@ struct FrameMeta: Encodable, Equatable, Sendable {
     var note: String?
     var device: String
     var taken: String
+    /// Which way up the phone was (`DeviceOrientation`'s raw value).
+    var orientation: String = DeviceOrientation.unknown.rawValue
+    /// Clockwise degrees that turn the (raw, sensor-landscape) image upright: 0, 90, 180 or 270.
+    var rotation: Int = 0
+    /// The lens step: `zoom` is this times the digital crop.
+    var opticalZoom: Double = 1
+    /// The lens's whole frame, in pixels, and the part of it in the image (`[x, y, w, h]`,
+    /// fractions of the raw frame). Nil when not known.
+    var frame: [Int]?
+    var crop: [Double]?
 
     private enum CodingKeys: String, CodingKey {
-        case zoom, lens, ev, focus, lensPosition, note, device, taken
+        case zoom, lens, ev, focus, lensPosition, note, device, taken, orientation, rotation
+        case opticalZoom, frame, crop
     }
 
     func encode(to encoder: Encoder) throws {
@@ -26,6 +37,11 @@ struct FrameMeta: Encodable, Equatable, Sendable {
         if let note { try c.encode(note, forKey: .note) } else { try c.encodeNil(forKey: .note) }
         try c.encode(device, forKey: .device)
         try c.encode(taken, forKey: .taken)
+        try c.encode(orientation, forKey: .orientation)
+        try c.encode(rotation, forKey: .rotation)
+        try c.encode(opticalZoom, forKey: .opticalZoom)
+        if let frame { try c.encode(frame, forKey: .frame) } else { try c.encodeNil(forKey: .frame) }
+        if let crop { try c.encode(crop, forKey: .crop) } else { try c.encodeNil(forKey: .crop) }
     }
 
     func json() throws -> Data {

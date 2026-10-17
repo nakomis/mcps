@@ -3,16 +3,23 @@ import Foundation
 /// Zoom arithmetic shared by the on-screen controls and `GET /set?zoom=`.
 /// Zooms here are multiples of the 1x (wide) lens, as `/status` reports them.
 enum ZoomMath {
-    /// The quick steps offered on screen, where the device can reach them.
-    static let presets: [Double] = [0.5, 1, 2, 5]
+    /// Digital steps offered when the device has only one lens (most iPads), so there's
+    /// still something to tap.
+    static let digitalPresets: [Double] = [2, 5]
 
     static func clamp<T: Comparable>(_ value: T, _ lower: T, _ upper: T) -> T {
         max(lower, min(value, upper))
     }
 
-    /// The presets within the device's range (with a little slack for rounding).
-    static func steps(min lower: Double, max upper: Double) -> [Double] {
-        presets.filter { $0 >= lower - 0.01 && $0 <= upper + 0.01 }
+    /// The quick steps offered on screen: the device's lens steps within its range (with a
+    /// little slack for rounding), plus a couple of digital ones if it has only one lens.
+    static func steps(lenses: [Double], min lower: Double, max upper: Double) -> [Double] {
+        let inRange = { (z: Double) in z >= lower - 0.01 && z <= upper + 0.01 }
+        var steps = Array(Set(lenses.filter(inRange))).sorted()
+        if steps.count < 2 {
+            steps += digitalPresets.filter { z in inRange(z) && !steps.contains { abs($0 - z) < 0.05 } }
+        }
+        return steps.sorted()
     }
 
     /// Slider position (0…1) for a zoom. The scale is logarithmic, so 1×→2× is as
