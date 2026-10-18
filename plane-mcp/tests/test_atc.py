@@ -29,6 +29,7 @@ class FakeAtc:
 def atc(monkeypatch):
     fake = FakeAtc()
     monkeypatch.setattr(server, "_atc", fake)
+    monkeypatch.setattr(server, "_max_points_cache", 100)  # as if the board had been asked
     return fake
 
 
@@ -105,7 +106,8 @@ def test_points_range_on_update(plane, atc, bad):
 
 def test_update_points_puts_to_atc(plane, atc):
     server.update_work_item("HOME-414", points=5)
-    assert atc.calls == [("PUT", "/api/work-items/i1/points", {"points": 5, "source": "mcp"})]
+    # A correction through update_work_item is Martin's (spec §9), not Claude's guess at creation.
+    assert atc.calls == [("PUT", "/api/work-items/i1/points", {"points": 5, "source": "martin"})]
     assert plane["calls"] == []  # nothing else to change in Plane
 
 
@@ -153,11 +155,6 @@ def test_whats_next_passes_through(atc):
     assert out["next"]["ref"] == "ATC-2" and "pick_up_story" in out["hint"]
 
 
-def test_whats_next_no_hint_when_empty(atc):
-    atc.responses["/api/next"] = {"column": None, "next": None, "runners_up": []}
-    assert "hint" not in server.whats_next()
-
-
 def test_set_project_meta_sends_only_given_fields(atc):
     server.set_project_meta("atc", repo="nakomis/atc", bau_enabled=True)
     assert atc.calls[-1] == ("PUT", "/api/projects/ATC", {"repo": "nakomis/atc", "bau_enabled": True})
@@ -167,3 +164,32 @@ def test_set_project_meta_with_nothing_is_an_error(atc):
     with pytest.raises(ToolError):
         server.set_project_meta("atc")
     assert atc.calls == []
+
+
+def test_whats_next_explains_an_empty_board(atc):
+    atc.responses["/api/next"] = {"column": None, "next": None, "runners_up": []}
+    out = server.whats_next()
+    assert out["next"] is None and "Nothing is in In progress or Up next" in out["hint"]
+
+
+def test_max_points_comes_from_the_server(plane, atc, monkeypatch):
+    monkeypatch.setattr(server, "_max_points_cache", None)
+    atc.responses["/api/board"] = {"max_points": 250, "columns": []}
+    out = server.update_work_item("HOME-414", points=180)
+    assert out["points"] == 180
+    assert ("GET", "/api/board", None) in atc.calls
+    with pytest.raises(ToolError, match="1 to 250"):
+        server.update_work_item("HOME-414", points=251)
+    assert [c for c in atc.calls if c[1] == "/api/board"] == [("GET", "/api/board", None)]  # asked once
+
+
+def test_max_points_falls_back_when_atc_cannot_be_asked(atc, monkeypatch):
+    monkeypatch.setattr(server, "_max_points_cache", None)
+    atc.fail_with = ToolError("ATC unreachable")
+    monkeypatch.delenv("ATC_MAX_POINTS", raising=False)
+    assert server._max_points() == 100
+    monkeypatch.setenv("ATC_MAX_POINTS", "40")
+    assert server._max_points() == 40
+    monkeypatch.setenv("ATC_MAX_POINTS", "lots")
+    assert server._max_points() == 100
+    assert server._max_points_cache is None  # asked again next time

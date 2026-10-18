@@ -59,7 +59,8 @@ _client = _make_client()
 
 # ── ATC (the priority board; ATC-5) ───────────────────────────────────────────
 
-ATC_MAX_POINTS = int(os.environ.get("ATC_MAX_POINTS", "100"))  # the API stays the authority
+DEFAULT_MAX_POINTS = 100
+_max_points_cache: int | None = None
 
 
 def _atc_root() -> str:
@@ -90,15 +91,38 @@ def _atc(method: str, path: str, *, json: dict | None = None, params: dict | Non
     return r.json() if r.content.strip() else None
 
 
+def _max_points() -> int:
+    """The server's points maximum (max_points on GET /api/board, ATC_MAX_POINTS there), asked
+    once per process. If ATC cannot be asked, the local ATC_MAX_POINTS or 100; the API checks
+    the bound again when the points are sent."""
+    global _max_points_cache
+    if _max_points_cache is None:
+        try:
+            value = (_atc("GET", "/api/board") or {}).get("max_points")
+        except ToolError:
+            value = None
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+            _max_points_cache = value
+        else:
+            try:
+                return max(1, int(os.environ.get("ATC_MAX_POINTS", DEFAULT_MAX_POINTS)))
+            except ValueError:
+                return DEFAULT_MAX_POINTS
+    return _max_points_cache
+
+
 def _check_points(points: int) -> int:
-    if isinstance(points, bool) or not isinstance(points, int) or not 1 <= points <= ATC_MAX_POINTS:
-        raise ToolError(f"points is required: an integer from 1 to {ATC_MAX_POINTS}, "
+    top = _max_points()
+    if isinstance(points, bool) or not isinstance(points, int) or not 1 <= points <= top:
+        raise ToolError(f"points is required: an integer from 1 to {top}, "
                         "where 1 point is about one day of Martin's own work")
     return points
 
 
-def _set_points(item_id: str, points: int) -> None:
-    _atc("PUT", f"/api/work-items/{item_id}/points", json={"points": points, "source": "mcp"})
+def _set_points(item_id: str, points: int, source: str) -> None:
+    """Record points in ATC. source: "mcp" for Claude's estimate at creation, "martin" for a
+    correction (spec §9: corrections become martin)."""
+    _atc("PUT", f"/api/work-items/{item_id}/points", json={"points": points, "source": source})
 
 
 def _request(method: str, path: str, *, params: dict = None, json: dict = None):
@@ -513,8 +537,8 @@ def create_work_item(project: str, name: str, points: int = None, module: str = 
                      parent: str = None, epic: bool = False) -> dict:
     """
     Create a work item. points is REQUIRED: an estimate on ATC's scale, where 1
-    point is about one day of Martin's own work. Any positive integer up to 100
-    (no Fibonacci); split anything over 20. module (name or id, optional) adds
+    point is about one day of Martin's own work. Any positive integer up to ATC's
+    max_points (100 by default; no Fibonacci); split anything over 20. module (name or id, optional) adds
     the new item to that module; an unknown module fails before anything is created.
     If ATC cannot record the points the ticket is kept and the error names it. description is markdown. state is a state name (default:
     the project's default state). labels are names (created if missing).
@@ -551,7 +575,7 @@ def create_work_item(project: str, name: str, points: int = None, module: str = 
                         f"failed: {e}. Points were not set; add it with add_to_module and set them "
                         f"with update_work_item(ref='{out['ref']}', points=N).") from e
     try:
-        _set_points(item["id"], points)
+        _set_points(item["id"], points, "mcp")
     except ToolError as e:
         raise ToolError(f"Created {out['ref']} ({out['url']}) but its points were not set: {e}. "
                         f"Set them with update_work_item(ref='{out['ref']}', points=N).") from e
@@ -567,8 +591,9 @@ def update_work_item(ref: str, name: str = None, description: str = None, state:
     Update a work item by ref (e.g. HOME-42). Only provided fields change.
     description is markdown and replaces the existing one. state is a state
     name, e.g. "Ready for test" or "Done". assignees replaces the list (emails,
-    display names or "me"). target_date is YYYY-MM-DD. points (1 to 100; 1 point
-    is about one day of Martin's own work) is recorded in ATC.
+    display names or "me"). target_date is YYYY-MM-DD. points (1 to ATC's
+    max_points, 100 by default; 1 point is about one day of Martin's own work) is
+    recorded in ATC as a correction (source "martin").
     """
     if points is not None:
         _check_points(points)
@@ -599,7 +624,7 @@ def update_work_item(ref: str, name: str = None, description: str = None, state:
         item = _request("PATCH", f"/projects/{p['id']}/work-items/{item['id']}/", json=body)
     out = _format_item(p, item)
     if points is not None:
-        _set_points(item["id"], points)
+        _set_points(item["id"], points, "martin")
         out["points"] = points
     return out
 
@@ -835,6 +860,9 @@ def whats_next() -> dict:
     out = _atc("GET", "/api/next")
     if out.get("next"):
         out["hint"] = "pick_up_story(ref) to start it"
+    else:
+        out["hint"] = ("Nothing is in In progress or Up next on ATC's board yet; Martin arranges "
+                       "it at https://atc.plane.home.nakomis.com. Ask him what to work on.")
     return out
 
 
