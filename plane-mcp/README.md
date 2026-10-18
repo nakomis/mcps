@@ -53,6 +53,15 @@ env = {PLANE_URL = "https://plane.home.nakomis.com", PLANE_WORKSPACE = "nakomis"
 | `add_to_module` | Add work items by ref (e.g. `["HOME-414", "HOME-416"]`); all refs must share a project |
 | `remove_from_module` | Remove work items by ref from a module (the items themselves are untouched) |
 
+## ATC
+
+Story points and the priority board live in ATC (`nakomis/atc`), reached with the same client certificate as Plane but never Plane's API token.
+
+- `ATC_URL` (default `https://atc.plane.home.nakomis.com`), `ATC_MAX_POINTS` (default 100; the ATC API stays the authority).
+- The scale: 1 point is about one day of Martin's own work. Any positive integer up to 100, no Fibonacci; split anything over 20.
+- `create_work_item` requires `points` and takes an optional `module`; it refuses before creating anything if points are missing or out of range, or the module is unknown. If ATC fails after the ticket is created, the ticket is kept and the error names it. `update_work_item` takes `points` too.
+- `atc_board` (columns, points, cards, modules), `whats_next` (next item, with a `pick_up_story` hint) and `set_project_meta` (repo, deploys, deploy_action, bau_enabled).
+
 ## Caching
 
 Projects, states, labels and members are cached for five minutes (`PLANE_CACHE_TTL`, seconds), not for the life of the process: Claude sessions run for days, and a project created from another session should appear. Pass `refresh=True` to `list_projects` or `get_project` to re-read at once. Looking up an unknown identifier always refreshes.

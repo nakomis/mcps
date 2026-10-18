@@ -57,6 +57,50 @@ def _make_client() -> httpx.Client:
 _client = _make_client()
 
 
+# ── ATC (the priority board; ATC-5) ───────────────────────────────────────────
+
+ATC_MAX_POINTS = int(os.environ.get("ATC_MAX_POINTS", "100"))  # the API stays the authority
+
+
+def _atc_root() -> str:
+    return os.environ.get("ATC_URL", "https://atc.plane.home.nakomis.com").rstrip("/")
+
+
+def _make_atc_client() -> httpx.Client:
+    """Same client certificate as Plane, but never Plane's API token: no X-API-Key header."""
+    cert, key = os.environ.get("PLANE_CLIENT_CERT"), os.environ.get("PLANE_CLIENT_KEY")
+    return httpx.Client(
+        cert=(cert, key) if cert and key else cert or None,
+        headers={"Content-Type": "application/json"},
+        timeout=30,
+    )
+
+
+_atc_client = _make_atc_client()
+
+
+def _atc(method: str, path: str, *, json: dict | None = None, params: dict | None = None):
+    params = {k: v for k, v in (params or {}).items() if v is not None}
+    try:
+        r = _atc_client.request(method, _atc_root() + path, params=params, json=json)
+    except httpx.HTTPError as e:
+        raise ToolError(f"ATC unreachable ({method} {path}): {e}") from e
+    if r.status_code >= 400:
+        raise ToolError(f"ATC {method} {path} -> {r.status_code}: {r.text[:500]}")
+    return r.json() if r.content.strip() else None
+
+
+def _check_points(points: int) -> int:
+    if isinstance(points, bool) or not isinstance(points, int) or not 1 <= points <= ATC_MAX_POINTS:
+        raise ToolError(f"points is required: an integer from 1 to {ATC_MAX_POINTS}, "
+                        "where 1 point is about one day of Martin's own work")
+    return points
+
+
+def _set_points(item_id: str, points: int) -> None:
+    _atc("PUT", f"/api/work-items/{item_id}/points", json={"points": points, "source": "mcp"})
+
+
 def _request(method: str, path: str, *, params: dict = None, json: dict = None):
     if not os.environ.get("PLANE_API_KEY"):
         raise ToolError("PLANE_API_KEY must be set (plane-mcp-launch.sh reads it from the Keychain)")
@@ -463,18 +507,25 @@ def pick_up_story(ref: str, assign_to_me: bool = True) -> dict:
 
 
 @mcp.tool()
-def create_work_item(project: str, name: str, description: str = None, state: str = None,
+def create_work_item(project: str, name: str, points: int = None, module: str = None,
+                     description: str = None, state: str = None,
                      labels: list[str] = None, assignees: list[str] = None, priority: str = None,
                      parent: str = None, epic: bool = False) -> dict:
     """
-    Create a work item. description is markdown. state is a state name (default:
+    Create a work item. points is REQUIRED: an estimate on ATC's scale, where 1
+    point is about one day of Martin's own work. Any positive integer up to 100
+    (no Fibonacci); split anything over 20. module (name or id, optional) adds
+    the new item to that module; an unknown module fails before anything is created.
+    If ATC cannot record the points the ticket is kept and the error names it. description is markdown. state is a state name (default:
     the project's default state). labels are names (created if missing).
     assignees are emails, display names or "me". priority: urgent|high|medium|low|none.
     parent is a ref (e.g. HOME-372) to make this a sub-item. epic=True adds the
     "epic" label (Plane CE has no epic type; migrated epics are labelled items).
-    Returns the new item, including its ref.
+    Returns the new item, including its ref, its points and its module.
     """
+    _check_points(points)
     p = _project(project)
+    m = _module(p, module) if module else None
     body = {"name": name}
     if description is not None:
         body["description_html"] = _html(description)
@@ -490,20 +541,37 @@ def create_work_item(project: str, name: str, description: str = None, state: st
     if parent:
         body["parent"] = _item_by_ref(parent)[1]["id"]
     item = _request("POST", f"/projects/{p['id']}/work-items/", json=body)
-    return _format_item(p, item)
+    out = _format_item(p, item)
+    try:
+        if m:
+            _request("POST", f"/projects/{p['id']}/modules/{m['id']}/module-issues/",
+                     json={"issues": [item["id"]]})
+    except ToolError as e:
+        raise ToolError(f"Created {out['ref']} ({out['url']}) but adding it to module '{m['name']}' "
+                        f"failed: {e}. Points were not set; add it with add_to_module and set them "
+                        f"with update_work_item(ref='{out['ref']}', points=N).") from e
+    try:
+        _set_points(item["id"], points)
+    except ToolError as e:
+        raise ToolError(f"Created {out['ref']} ({out['url']}) but its points were not set: {e}. "
+                        f"Set them with update_work_item(ref='{out['ref']}', points=N).") from e
+    return {**out, "points": points, "module": m["name"] if m else None}
 
 
 @mcp.tool()
 def update_work_item(ref: str, name: str = None, description: str = None, state: str = None,
                      add_labels: list[str] = None, remove_labels: list[str] = None,
                      assignees: list[str] = None, priority: str = None, parent: str = None,
-                     clear_parent: bool = False, target_date: str = None) -> dict:
+                     clear_parent: bool = False, target_date: str = None, points: int = None) -> dict:
     """
     Update a work item by ref (e.g. HOME-42). Only provided fields change.
     description is markdown and replaces the existing one. state is a state
     name, e.g. "Ready for test" or "Done". assignees replaces the list (emails,
-    display names or "me"). target_date is YYYY-MM-DD.
+    display names or "me"). target_date is YYYY-MM-DD. points (1 to 100; 1 point
+    is about one day of Martin's own work) is recorded in ATC.
     """
+    if points is not None:
+        _check_points(points)
     p, item = _item_by_ref(ref)
     body = {}
     if name is not None:
@@ -527,10 +595,13 @@ def update_work_item(ref: str, name: str = None, description: str = None, state:
         body["parent"] = None
     if target_date:
         body["target_date"] = target_date
-    if not body:
-        return _format_item(p, item)
-    item = _request("PATCH", f"/projects/{p['id']}/work-items/{item['id']}/", json=body)
-    return _format_item(p, item)
+    if body:
+        item = _request("PATCH", f"/projects/{p['id']}/work-items/{item['id']}/", json=body)
+    out = _format_item(p, item)
+    if points is not None:
+        _set_points(item["id"], points)
+        out["points"] = points
+    return out
 
 
 @mcp.tool()
@@ -739,6 +810,45 @@ def remove_from_module(module: str, refs: list[str]) -> dict:
         _request("DELETE", f"/projects/{p['id']}/modules/{m['id']}/module-issues/{i['id']}/")
     return {"module": m["name"], "removed": [ref(i) for i in removed],
             "not_in_module": [ref(i) for i in items if i["id"] not in present]}
+
+
+# ── ATC tools ─────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def atc_board() -> dict:
+    """ATC's priority board in brief: each column (In progress, Up next, Backlog)
+    with its points, unestimated count and cards, and each card's modules with
+    their points. No work items; use whats_next for the item to do."""
+    board = _atc("GET", "/api/board")
+    return {"columns": [{
+        "column": c["label"], "points": c["points"], "unestimated": c["unestimated"],
+        "cards": [{"label": k["label"], "points": k["points"], "unestimated": k["unestimated"],
+                   "modules": [{"name": m["name"], "points": m["points"]} for m in k["modules"]]}
+                  for k in c["cards"]],
+    } for c in board["columns"]]}
+
+
+@mcp.tool()
+def whats_next() -> dict:
+    """The next work item to do according to ATC's board order, with up to two
+    runners-up. Pass the ref to pick_up_story to start it."""
+    out = _atc("GET", "/api/next")
+    if out.get("next"):
+        out["hint"] = "pick_up_story(ref) to start it"
+    return out
+
+
+@mcp.tool()
+def set_project_meta(project: str, repo: str = None, deploys: bool = None,
+                     deploy_action: str = None, bau_enabled: bool = None) -> dict:
+    """Set ATC's metadata for a project (identifier, e.g. ATC): repo ("owner/name"),
+    whether it deploys, its deploy action, and whether overnight BAU may work on
+    it. Only the fields given change."""
+    body = {k: v for k, v in (("repo", repo), ("deploys", deploys), ("deploy_action", deploy_action),
+                              ("bau_enabled", bau_enabled)) if v is not None}
+    if not body:
+        raise ToolError("Give at least one of repo, deploys, deploy_action, bau_enabled")
+    return _atc("PUT", f"/api/projects/{project.strip().upper()}", json=body)
 
 
 def main():
