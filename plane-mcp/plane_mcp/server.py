@@ -20,6 +20,7 @@ import httpx
 import markdown as md
 from markdownify import markdownify
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 mcp = MCPServer("plane-mcp")
 logging.getLogger("httpx").setLevel(logging.WARNING)  # one INFO line per request otherwise
@@ -58,7 +59,7 @@ _client = _make_client()
 
 def _request(method: str, path: str, *, params: dict = None, json: dict = None):
     if not os.environ.get("PLANE_API_KEY"):
-        raise RuntimeError("PLANE_API_KEY must be set (plane-mcp-launch.sh reads it from the Keychain)")
+        raise ToolError("PLANE_API_KEY must be set (plane-mcp-launch.sh reads it from the Keychain)")
     params = {k: v for k, v in (params or {}).items() if v is not None}
     for attempt in range(5):
         r = _client.request(method, _root() + path, params=params, json=json)
@@ -66,9 +67,9 @@ def _request(method: str, path: str, *, params: dict = None, json: dict = None):
             time.sleep(int(r.headers.get("Retry-After") or 2 ** attempt))
             continue
         if r.status_code >= 400:
-            raise RuntimeError(f"{method} {path} -> {r.status_code}: {r.text[:500]}")
+            raise ToolError(f"{method} {path} -> {r.status_code}: {r.text[:500]}")
         return r.json() if r.content.strip() else None
-    raise RuntimeError(f"{method} {path}: gave up after retries ({r.status_code})")
+    raise ToolError(f"{method} {path}: gave up after retries ({r.status_code})")
 
 
 def _get(path: str, **params):
@@ -129,7 +130,7 @@ def _project(identifier: str) -> dict:
         if p:
             return p
     known = sorted(p["identifier"] for p in _projects())
-    raise ValueError(f"No project '{ident}'. Active projects: {known}")
+    raise ToolError(f"No project '{ident}'. Active projects: {known}")
 
 
 def _project_meta(p: dict) -> dict:
@@ -157,7 +158,7 @@ def _me() -> dict:
 def _split_ref(ref: str) -> tuple[str, int]:
     m = re.fullmatch(r"\s*([A-Za-z0-9]+)-(\d+)\s*", ref or "")
     if not m:
-        raise ValueError(f"Expected PROJECT-N (e.g. HOME-42), got: {ref!r}")
+        raise ToolError(f"Expected PROJECT-N (e.g. HOME-42), got: {ref!r}")
     return m.group(1).upper(), int(m.group(2))
 
 
@@ -165,18 +166,20 @@ def _state_id(p: dict, name: str) -> str:
     states = _project_meta(p)["states"]
     s = next((s for s in states if s["name"].lower() == name.lower()), None)
     if not s:
-        raise ValueError(f"No state '{name}' in {p['identifier']}. States: {[x['name'] for x in states]}")
+        raise ToolError(f"No state '{name}' in {p['identifier']}. States: {[x['name'] for x in states]}")
     return s["id"]
 
 
 def _label_ids(p: dict, names: list[str], create: bool = True) -> list[str]:
+    """Label ids for names. Missing labels are created, or with create=False
+    skipped: labels are per project, and no item can carry one its project lacks."""
     labels = _project_meta(p)["labels"]
     out = []
     for name in names:
         lab = next((l for l in labels if l["name"].lower() == name.lower()), None)
         if lab is None:
             if not create:
-                raise ValueError(f"No label '{name}' in {p['identifier']}")
+                continue
             lab = _request("POST", f"/projects/{p['id']}/labels/", json={"name": name})
             labels.append(lab)
         out.append(lab["id"])
@@ -191,7 +194,7 @@ def _user_id(p: dict, who: str) -> str:
         if who in (m.get("id"), m.get("email"), m.get("display_name")) or \
                 who.lower() in {(m.get("email") or "").lower(), (m.get("display_name") or "").lower()}:
             return m["id"]
-    raise ValueError(f"No member '{who}' in {p['identifier']}")
+    raise ToolError(f"No member '{who}' in {p['identifier']}")
 
 
 def _format_item(p: dict, i: dict, *, full: bool = True) -> dict:
@@ -296,9 +299,9 @@ def create_project(name: str, identifier: str, description: str = "") -> dict:
     "shortener" rather than failing the call."""
     ident = identifier.strip().upper()
     if not re.fullmatch(r"[A-Z0-9]{1,12}", ident):
-        raise ValueError("identifier must be 1-12 letters or digits")
+        raise ToolError("identifier must be 1-12 letters or digits")
     if re.search(r"[&+,:;$^}{*=?@#|'<>.()%!-]", name):
-        raise ValueError("Plane rejects project names containing - . & + , : ; $ ^ { } * = ? @ # | ' < > ( ) % !")
+        raise ToolError("Plane rejects project names containing - . & + , : ; $ ^ { } * = ? @ # | ' < > ( ) % !")
     p = _request("POST", "/projects/", json={
         "name": name, "identifier": ident, "description": description, "network": 0,
         "module_view": True, "cycle_view": True, "issue_views_view": True, "page_view": True,
@@ -312,7 +315,7 @@ def create_project(name: str, identifier: str, description: str = "") -> dict:
             uid = m["member"]["id"] if isinstance(m.get("member"), dict) else m["id"]
             try:
                 _request("POST", f"/projects/{p['id']}/project-members/", json={"member": uid, "role": 20})
-            except RuntimeError:
+            except ToolError:
                 pass  # already a member (e.g. the creator)
     result = get_project(ident)
     result["shortener"] = _sync_shortener_project(_project(ident))
@@ -593,9 +596,9 @@ def _module(p: dict, ident: str) -> dict:
         return by_id
     matches = [m for m in modules if m["name"].lower() == wanted.lower()]
     if len(matches) > 1:
-        raise ValueError(f"{len(matches)} modules in {p['identifier']} are named '{ident}'; use the id: {[m['id'] for m in matches]}")
+        raise ToolError(f"{len(matches)} modules in {p['identifier']} are named '{ident}'; use the id: {[m['id'] for m in matches]}")
     if not matches:
-        raise ValueError(f"No module '{ident}' in {p['identifier']}. Modules: {sorted(m['name'] for m in modules)}")
+        raise ToolError(f"No module '{ident}' in {p['identifier']}. Modules: {sorted(m['name'] for m in modules)}")
     return matches[0]
 
 
@@ -634,7 +637,7 @@ def _module_body(p: dict, name, description, status, lead, start_date, target_da
         body["description"] = description
     if status is not None:
         if status not in MODULE_STATUSES:
-            raise ValueError(f"status must be one of {list(MODULE_STATUSES)}, got {status!r}")
+            raise ToolError(f"status must be one of {list(MODULE_STATUSES)}, got {status!r}")
         body["status"] = status
     if lead is not None:
         body["lead"] = _user_id(p, lead)
@@ -648,11 +651,11 @@ def _module_body(p: dict, name, description, status, lead, start_date, target_da
 def _items_by_refs(refs: list[str]) -> tuple[dict, list[dict]]:
     """Fetch work items by ref; they must all belong to one project."""
     if not refs:
-        raise ValueError("refs must not be empty")
+        raise ToolError("refs must not be empty")
     parsed = [_split_ref(r) for r in refs]
     projects = sorted({ident for ident, _ in parsed})
     if len(projects) > 1:
-        raise ValueError(f"All refs must be in one project, got: {projects}")
+        raise ToolError(f"All refs must be in one project, got: {projects}")
     p = _project(projects[0])
     return p, [_item_by_ref(r)[1] for r in refs]
 

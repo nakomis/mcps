@@ -80,13 +80,13 @@ def test_get_module_by_name_case_insensitive_and_by_id(plane):
 
 
 def test_get_module_unknown_lists_modules(plane):
-    with pytest.raises(ValueError, match="No module 'nope'.*Conversation-memory"):
+    with pytest.raises(server.ToolError, match="No module 'nope'.*Conversation-memory"):
         server.get_module("HOME", "nope")
 
 
 def test_ambiguous_name_is_an_error(plane):
     plane["modules"].append(_mod("m9", "other"))
-    with pytest.raises(ValueError, match="2 modules"):
+    with pytest.raises(server.ToolError, match="2 modules"):
         server.get_module("HOME", "OTHER")
 
 
@@ -106,7 +106,7 @@ def test_create_module_minimal_sends_only_name(plane):
 
 
 def test_invalid_status_rejected_before_any_request(plane):
-    with pytest.raises(ValueError, match="status must be one of"):
+    with pytest.raises(server.ToolError, match="status must be one of"):
         server.create_module("HOME", "X", status="done")
     assert plane["calls"] == []
 
@@ -134,9 +134,9 @@ def test_add_to_module_all_present_makes_no_write(plane):
 
 
 def test_refs_must_share_a_project(plane):
-    with pytest.raises(ValueError, match="one project"):
+    with pytest.raises(server.ToolError, match="one project"):
         server.add_to_module("m1", ["HOME-414", "NAKIS-1"])
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(server.ToolError, match="empty"):
         server.remove_from_module("m1", [])
     assert plane["calls"] == []
 
