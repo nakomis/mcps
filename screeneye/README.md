@@ -7,6 +7,8 @@ BIOS setup page, a TV, a printer's touchscreen.
   serves it over HTTP on port 8080, advertised over Bonjour as `_screeneye._tcp`.
   Generate the Xcode project with `xcodegen` (`project.yml`), then build to the
   phone.
+- [`macos/`](macos/) — a Mac app to watch the phone's camera live and take
+  pictures with it (it doesn't use the Mac's own camera).
 - [`mcp/`](mcp/) — the MCP server that drives it.
 - [`host/`](host/) — the always-on host on Mace: receives frames the app
   pushes, and runs the MCP.
@@ -24,8 +26,9 @@ If you find this useful, please consider buying me a coffee:
 | `GET /snapshot.jpg` | The picture: the visible region (the viewport) of the latest frame at full resolution, raw. Headers `X-ScreenEye-Orientation`, `X-ScreenEye-Rotation` and `X-ScreenEye-Viewport` (`x,y,w,h`, raw fractions of the lens's frame) |
 | `GET /snapshot.jpg?upright=1` | The same picture turned upright (`X-ScreenEye-Rotation` is then `0`) |
 | `GET /snapshot.jpg?full=1` | The lens's whole frame rather than the viewport (combines with `upright=1`) |
+| `GET /snapshot.jpg?max=1600` | Scaled down so its longer side is at most this many pixels, for a live preview (combines with the others) |
 | `GET /set?zoom=4&pan=0.3,0.6&focus=0.5,0.5&lock=1&ev=-1` | Zoom (multiple of the 1x lens), viewport centre (fractions of the lens's frame), focus/exposure point (fractions of the picture), focus lock, exposure bias. Any subset. Add `upright=1` to give `pan` and `focus` in the upright frame |
-| `GET /status` | JSON: `zoom`, `maxZoom`, `opticalZoom`, `lens`, `focusMode`, `lensPosition`, `ev`, `orientation`, `rotation`, `pan`, `viewport`, `coordinates`. `?upright=1` gives `pan` and `viewport` in the upright frame (`coordinates` says which) |
+| `GET /status` | JSON: `zoom`, `minZoom`, `maxZoom`, `lensSteps`, `opticalZoom`, `lens`, `focusMode`, `lensPosition`, `ev`, `orientation`, `rotation`, `pan`, `viewport`, `coordinates`. `?upright=1` gives `pan` and `viewport` in the upright frame (`coordinates` says which) |
 
 ### Orientation
 
@@ -98,6 +101,43 @@ or `{"error": "…"}` with a 4xx/5xx.
 cd ios && xcodegen generate
 xcodebuild -project ScreenEye.xcodeproj -scheme ScreenEye \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test   # unit tests
+```
+
+## The Mac app
+
+[`macos/`](macos/) is a native viewer for the phone: it finds it over Bonjour
+(`_screeneye._tcp`; pick one in the toolbar if there are several, or type an
+address in Settings), shows the camera live and takes pictures on the Mac. It
+never touches the Mac's own camera.
+
+- **Live view:** polls `/snapshot.jpg?upright=1&max=…` back to back, one
+  request at a time, so it runs as fast as the phone and Wi-Fi allow. The frame
+  size is in Settings (smaller is smoother). A phone app from before EYE-5
+  ignores `max` and sends full-size frames: it still works, just slower.
+- **Zoom:** the lens steps, the slider (logarithmic, like the phone's), a
+  trackpad pinch, or ⌘= / ⌘- / ⌘1.
+- **Pan:** zoomed past a lens, drag the picture; an overview in the corner
+  shows where you are. Double-click or ⌘0 recentres.
+- **Focus:** click the picture to focus and expose there; *Lock focus* (⌘L)
+  holds it. The EV slider sets the exposure bias.
+- **Take Picture** (⌘S, or Return in the note field): the full-resolution
+  upright picture, exactly as the phone encoded it, saved to
+  `~/Pictures/ScreenEye/YYYY-MM-DD/HHMMSS[-note].jpg` with a `.json` sidecar
+  (the phone's `/status`, the note, the time and the phone), named as the host
+  names them and never overwriting. ⌥⌘S takes the lens's whole frame. The
+  folder, and copying each picture to the clipboard too, are in Settings.
+  ⇧⌘C copies the live frame.
+
+Being a signed app with `NSLocalNetworkUsageDescription` and
+`NSBonjourServices`, it gets macOS's Local Network prompt (allow it) rather
+than being silently blocked as a process meta-mcp spawns is.
+
+```sh
+cd macos && xcodegen generate
+xcodebuild -project ScreenEyeMac.xcodeproj -scheme ScreenEyeMac -destination 'platform=macOS' test
+xcodebuild -project ScreenEyeMac.xcodeproj -scheme ScreenEyeMac -configuration Release \
+  -derivedDataPath build/dd -allowProvisioningUpdates build
+cp -R build/dd/Build/Products/Release/ScreenEye.app /Applications/
 ```
 
 ## The MCP server

@@ -10,11 +10,13 @@ import UIKit
 ///                            X-ScreenEye-Rotation and X-ScreenEye-Viewport
 ///     ?upright=1             turned upright
 ///     ?full=1                the lens's whole frame rather than the viewport
+///     ?max=1280              scaled down so its longer side is at most this many pixels
 ///   GET /set?zoom=4&pan=0.3,0.6&focus=0.5,0.5&lock=1&ev=-1
 ///                            zoom (x of the 1x lens), viewport centre (fractions of the lens's
 ///                            frame), focus point (fractions of the picture), lock, exposure bias.
 ///     &upright=1             pan and focus are in the upright frame rather than the raw one
-///   GET /status[?upright=1]  JSON, with orientation, rotation, opticalZoom, pan and viewport
+///   GET /status[?upright=1]  JSON, with orientation, rotation, opticalZoom, pan, viewport,
+///                            minZoom and lensSteps
 ///
 /// Zoom is the lens's own zoom (the nearest lens step at or below) and then a digital crop of
 /// its frame, so the crop can sit anywhere in the frame: that's panning.
@@ -247,12 +249,15 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
         guard let d = device else { return "{}" }
         let o = orientation.state
         let v = currentView
+        lock.lock(); let (range, steps) = (zoomRange, lenses); lock.unlock()
         let r = upright ? o.rotation : 0
         let c = FrameMath.turned(v.center, rotation: r)
         let rect = FrameMath.turned(v.rect, rotation: r)
         let obj: [String: Any] = [
             "zoom": FrameMeta.round(v.zoom, 2),
             "maxZoom": FrameMeta.round(Double(d.maxAvailableVideoZoomFactor / oneXFactor), 1),
+            "minZoom": FrameMeta.round(range.0, 2),
+            "lensSteps": steps.map { FrameMeta.round($0, 2) },
             "opticalZoom": FrameMeta.round(v.optical, 2),
             "lens": d.activePrimaryConstituent?.localizedName ?? "?",
             "focusMode": d.focusMode.rawValue,
@@ -321,14 +326,20 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
     }
 
     /// The latest frame as a JPEG (the viewport, or the whole frame), raw or turned upright,
-    /// with the orientation and viewport it was taken with.
-    private func snapshot(upright: Bool, full: Bool) -> (Data, OrientationState, CGRect)? {
+    /// with the orientation and viewport it was taken with. `maxDim` scales it down so its longer
+    /// side is at most that many pixels.
+    private func snapshot(upright: Bool, full: Bool, maxDim: Double? = nil) -> (Data, OrientationState, CGRect)? {
         lock.lock(); let img = latest; let v = view; let frameOptical = latestOptical; lock.unlock()
         let o = orientation.state
         guard var img else { return nil }
         let rect = full ? CGRect(x: 0, y: 0, width: 1, height: 1) : v.rect(forFrameAt: frameOptical)
         if !full { img = Self.crop(img, to: rect) }
         if upright { img = img.oriented(OrientationMath.imageOrientation(rotation: o.rotation)) }
+        let longest = max(img.extent.width, img.extent.height)
+        if let maxDim, maxDim >= 16, longest > maxDim {
+            let s = maxDim / longest
+            img = img.transformed(by: CGAffineTransform(scaleX: s, y: s))
+        }
         return jpeg(img).map { ($0, o, rect) }
     }
 
@@ -362,7 +373,8 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
             switch comps?.path ?? "/" {
             case "/snapshot.jpg":
                 let upright = Self.flag(q["upright"])
-                if let (j, o, rect) = self.snapshot(upright: upright, full: Self.flag(q["full"])) {
+                if let (j, o, rect) = self.snapshot(upright: upright, full: Self.flag(q["full"]),
+                                                      maxDim: q["max"].flatMap(Double.init)) {
                     body = j; type = "image/jpeg"
                     // The rotation still to apply: none if this frame is already upright.
                     // The viewport is always raw fractions of the lens's frame.
