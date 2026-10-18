@@ -11,15 +11,22 @@ struct ContentView: View {
     @State private var note = ""
     @State private var showSettings = false
     @GestureState private var pinchStart: Double?
+    /// The viewport centre when a drag began.
+    @GestureState private var dragStart: CGPoint?
+    /// The preview's clockwise turn of the raw frame, and its size on screen.
+    @State private var previewAngle = 90
+    @State private var previewSize = CGSize.zero
     @AppStorage(hostURLKey) private var hostURL = ""
     @FocusState private var noteFocused: Bool
 
     var body: some View {
         ZStack {
-            PreviewView(session: camera.session)
+            PreviewView(session: camera.session, viewport: camera.viewport, aspect: camera.frameAspect) { previewAngle = $0 }
                 .ignoresSafeArea()
+                .onGeometryChange(for: CGSize.self) { $0.size } action: { previewSize = $0 }
                 .contentShape(Rectangle())
-                .gesture(pinch)
+                .gesture(pinch.simultaneously(with: drag))
+                .onTapGesture(count: 2) { camera.recentre() }
                 .onTapGesture { noteFocused = false }
 
             VStack(spacing: 8) {
@@ -29,12 +36,18 @@ struct ContentView: View {
                         .padding(6)
                         .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
                     Spacer()
-                    Button { showSettings = true } label: {
-                        Image(systemName: "gearshape.fill")
-                            .padding(8)
-                            .background(.black.opacity(0.6), in: Circle())
+                    VStack(alignment: .trailing, spacing: 8) {
+                        Button { showSettings = true } label: {
+                            Image(systemName: "gearshape.fill")
+                                .padding(8)
+                                .background(.black.opacity(0.6), in: Circle())
+                        }
+                        .accessibilityLabel("Settings")
+                        if camera.viewport.digital > 1.001 {
+                            OverviewInset(image: camera.overview, viewport: camera.viewport,
+                                          angle: previewAngle, aspect: camera.frameAspect)
+                        }
                     }
-                    .accessibilityLabel("Settings")
                 }
                 Spacer()
                 zoomControls
@@ -61,6 +74,22 @@ struct ContentView: View {
             }
     }
 
+    /// While zoomed in past the lens, dragging moves the visible region: the picture follows the
+    /// finger. Double tap recentres.
+    private var drag: some Gesture {
+        DragGesture(minimumDistance: 8)
+            .updating($dragStart) { value, start, _ in
+                let v = camera.viewport
+                guard v.digital > 1.001 else { return }
+                if start == nil { start = v.center }
+                let shown = ViewportMath.fitted(
+                    aspect: ViewportMath.shownAspect(raw: camera.frameAspect, angle: previewAngle), in: previewSize)
+                camera.setView(zoom: nil, center: ViewportMath.dragged(
+                    from: start ?? v.center, translation: value.translation,
+                    angle: previewAngle, shown: shown, digital: v.digital))
+            }
+    }
+
     private var sliderPosition: Binding<Double> {
         Binding(
             get: { ZoomMath.sliderPosition(zoom: camera.zoom, min: camera.minZoom, max: camera.maxZoom) },
@@ -75,7 +104,7 @@ struct ContentView: View {
                     .font(.system(.headline, design: .monospaced))
                     .frame(minWidth: 56)
                     .accessibilityLabel("Zoom \(ZoomMath.label(camera.zoom))")
-                ForEach(ZoomMath.steps(min: camera.minZoom, max: camera.maxZoom), id: \.self) { step in
+                ForEach(ZoomMath.steps(lenses: camera.lensSteps, min: camera.minZoom, max: camera.maxZoom), id: \.self) { step in
                     let current = abs(camera.zoom - step) < 0.05
                     Button(ZoomMath.label(step)) { camera.setZoom(step) }
                         .font(.system(.subheadline, design: .monospaced).bold())
@@ -187,6 +216,49 @@ struct SettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
+        }
+    }
+}
+
+/// The lens's whole frame, small, with the visible region outlined.
+struct OverviewInset: View {
+    let image: CGImage?
+    let viewport: Viewport
+    /// The preview's clockwise turn of the raw frame, so the inset matches the preview.
+    let angle: Int
+    let aspect: Double
+
+    var body: some View {
+        let shownAspect = ViewportMath.shownAspect(raw: aspect, angle: angle)
+        let r = FrameMath.turned(viewport.rect, rotation: angle)
+        ZStack {
+            if let image {
+                Image(decorative: image, scale: 1, orientation: Self.orientation(angle)).resizable()
+            } else {
+                Color.black.opacity(0.5)
+            }
+        }
+        .aspectRatio(shownAspect, contentMode: .fit)
+        .frame(width: shownAspect >= 1 ? 140 : 80)
+        .overlay {
+            GeometryReader { g in
+                Rectangle()
+                    .stroke(.yellow, lineWidth: 2)
+                    .frame(width: r.width * g.size.width, height: r.height * g.size.height)
+                    .offset(x: r.minX * g.size.width, y: r.minY * g.size.height)
+            }
+        }
+        .border(.white.opacity(0.6))
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    static func orientation(_ angle: Int) -> Image.Orientation {
+        switch angle {
+        case 90: .right
+        case 180: .down
+        case 270: .left
+        default: .up
         }
     }
 }
