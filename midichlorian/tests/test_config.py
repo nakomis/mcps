@@ -40,3 +40,13 @@ def test_refuses_self_service():
 def test_missing_required():
     with pytest.raises(ValueError):
         load_settings({})
+
+
+def test_served_names_must_be_known_hosts():
+    with pytest.raises(ValueError, match="unknown hosts in MIDICHLORIAN_SERVED: luek"):
+        load_settings({**BASE, "MIDICHLORIAN_SERVED": "luek,leia"})
+
+
+def test_peer_names_need_not_be_hosts():
+    s = load_settings({**BASE, "MIDICHLORIAN_PEERS": "elsewhere=http://e"})
+    assert s.peers == {"elsewhere": "http://e"}

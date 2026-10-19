@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from midichlorian.hosts import HOSTS
+
 DEFAULT_REPO_URL = "https://github.com/nakomis/home-infra.git"
 
 
@@ -46,6 +48,9 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
     served = frozenset(
         s.strip() for s in _required(env, "MIDICHLORIAN_SERVED").split(",") if s.strip()
     )
+    unknown = sorted(served - set(HOSTS))
+    if unknown:
+        raise ValueError(f"unknown hosts in MIDICHLORIAN_SERVED: {', '.join(unknown)}")
     if instance in served:
         raise ValueError(f"instance {instance!r} must not serve itself")
     return Settings(
