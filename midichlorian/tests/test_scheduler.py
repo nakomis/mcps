@@ -117,3 +117,36 @@ def test_fifo_among_eligible_blocked_lower_id_does_not_block():
     other = job(5, host="leia", request=2)
     runnable, _ = next_runnable([first, blocked, other])
     assert ids(runnable) == [5]
+
+
+def printer_held(id, host="leia", request=1):
+    j = job(id, host, "waiting", request)
+    j.detail = {"gate": "printer busy — Cthulhu: Exposure"}
+    return j
+
+
+def override(id, host="leia", request=2, state="queued"):
+    j = job(id, host, state, request)
+    j.override_printer = True
+    return j
+
+
+def test_override_job_passes_a_head_job_held_for_a_printer():
+    runnable, _ = next_runnable([printer_held(1), override(2)])
+    assert ids(runnable) == [2, 1]  # the override is offered first
+
+
+def test_only_one_override_passes_and_only_a_printer_hold():
+    runnable, _ = next_runnable([printer_held(1), override(2), override(3, request=3)])
+    assert ids(runnable) == [2, 1]
+    peer_held = job(1, "mace", "waiting")
+    peer_held.detail = {"gate": "peer mace has a running job"}
+    runnable, _ = next_runnable([peer_held, override(2, host="mace")])
+    assert ids(runnable) == [1]
+    runnable, _ = next_runnable([job(1, "leia", "queued"), override(2)])
+    assert ids(runnable) == [1]  # a merely queued head is not passed
+
+
+def test_override_never_passes_a_running_job():
+    runnable, _ = next_runnable([job(1, "leia", "running"), override(2)])
+    assert runnable == []

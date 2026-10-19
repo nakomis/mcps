@@ -599,12 +599,24 @@ async def test_waiting_job_holds_its_host(w):
     c = w.coordinator()
     first = await c.submit(["leia"], "c", None, False, "s1")
     second = await c.submit(
-        ["leia", "cal"], "c", None, True, "s2"
-    )  # not merged: multi-host
+        ["leia", "cal"], "c", None, False, "s2"
+    )  # not merged: multi-host; and no override, so it does not pass the held job
     await settle(c)
     assert w.job(first.jobs[0]["job_id"]).state == "waiting"
     assert w.job(second.jobs[0]["job_id"]).state == "queued"
     assert w.runner.calls == []
+
+
+async def test_override_request_passes_a_job_held_for_the_printer(w):
+    w.probes.busy = True
+    c = w.coordinator()
+    held = (await c.submit(["leia"], "c", None, False, "s1")).jobs[0]["job_id"]
+    await settle(c)
+    assert w.job(held).state == "waiting"
+    over = (await c.submit(["leia"], "c", None, True, "martin")).jobs[0]["job_id"]
+    await settle(c)
+    assert w.job(over).state == "succeeded"
+    assert w.job(held).state == "waiting"  # still held: Martin authorised only his run
 
 
 async def test_aws_gate_failure_fails_at_once(w):

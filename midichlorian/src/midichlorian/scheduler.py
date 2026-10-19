@@ -45,12 +45,20 @@ def merge_target(
     return min(candidates, key=lambda j: j.id, default=None)
 
 
+def _printer_held(j: Job) -> bool:
+    return j.state == "waiting" and str(j.detail.get("gate", "")).startswith("printer busy")
+
+
 def next_runnable(jobs: list[Job]) -> tuple[list[Job], list[Job]]:
     """Return (runnable, to_skip).
 
-    runnable: at most one job per host, oldest first, and none for a host that
-    already has a running job. A job at position > 0 is only eligible once every
-    earlier job of its request has succeeded or been found already deployed.
+    runnable: the oldest eligible job per host, and none for a host that already has
+    a running job. A job at position > 0 is only eligible once every earlier job of
+    its request has succeeded or been found already deployed. One exception to
+    per-host FIFO: when a host's head job is waiting on the printer gate, the oldest
+    eligible override_printer job for that host is offered too, ahead of it (Martin
+    authorised that run; it should not sit behind a print he chose to run through).
+    Callers start at most one job per host.
     Caller contract: every non-terminal earlier-position job of a request must be
     in the input; earlier positions that are missing count as satisfied.
     to_skip: queued/waiting jobs whose request has an earlier failed, cancelled,
@@ -73,9 +81,16 @@ def next_runnable(jobs: list[Job]) -> tuple[list[Job], list[Job]]:
             eligible.append(j)
 
     runnable: list[Job] = []
-    seen = set(busy)
+    heads: dict[str, Job] = {}
+    passed: set[str] = set()
     for j in eligible:
-        if j.host not in seen:
-            seen.add(j.host)
+        if j.host in busy:
+            continue
+        head = heads.get(j.host)
+        if head is None:
+            heads[j.host] = j
             runnable.append(j)
+        elif j.override_printer and _printer_held(head) and j.host not in passed:
+            passed.add(j.host)
+            runnable.insert(runnable.index(head), j)
     return runnable, to_skip
