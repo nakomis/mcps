@@ -32,3 +32,5 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# fastapi's TestClient still wraps httpx; nothing here to act on until fastapi moves
+filterwarnings = ["ignore:Using `httpx` with `starlette.testclient` is deprecated"]

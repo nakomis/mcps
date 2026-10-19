@@ -243,7 +243,7 @@ def test_no_token_in_logs(solo, caplog):
 
 
 def test_hosts_local_fields(solo):
-    tc, coord, store = solo
+    tc, _coord, store = solo
     store.record_deploy("luke", SHA, None, "2026-10-19T08:00:00Z")
     make_job(store, "luke", "succeeded", finished="2026-10-19T08:00:00Z")
     running = make_job(store, "luke", "running", started="2026-10-19T09:00:00Z")
@@ -295,7 +295,7 @@ def test_hosts_merge_peer(env):
     cere = next(h for h in body["hosts"] if h["name"] == "cere")
     assert cere["served_by"] == "mace"
     assert body["peers_unreachable"] == []
-    sent = [r for r in peer.requests if r.url.path == "/api/hosts"][0]
+    sent = next(r for r in peer.requests if r.url.path == "/api/hosts")
     assert sent.headers["authorization"] == f"Bearer {TOKEN}"
     assert sent.url.params["local"] == "1"
 
@@ -370,7 +370,7 @@ def test_runs_merge_peer_newest_first(env):
     assert {r["instance"] for r in body["runs"]} == {"cere", "mace"}
     created = [r["created"] for r in body["runs"]]
     assert created == sorted(created, reverse=True)
-    sent = [r for r in peer.requests if r.url.path == "/api/runs"][0]
+    sent = next(r for r in peer.requests if r.url.path == "/api/runs")
     assert sent.url.params["limit"] == "10"
 
 
@@ -405,7 +405,7 @@ def test_instance_param_proxies_to_peer(env):
     assert body["instance"] == "mace"
     log = tc.get("/api/runs/5/log", params={"instance": "mace", "since": 3}).json()
     assert log == {"text": "peer log\n", "next": 9}
-    sent = [r for r in peer.requests if r.url.path == "/api/runs/5/log"][0]
+    sent = next(r for r in peer.requests if r.url.path == "/api/runs/5/log")
     assert sent.url.params["since"] == "3"
     assert "instance" not in sent.url.params
     assert sent.headers["authorization"] == f"Bearer {TOKEN}"
@@ -455,7 +455,7 @@ def test_cancel_unknown_is_404(solo):
 
 
 def test_cancel_proxies_and_passes_status_through(env):
-    tc, _, peer, _ = env
+    tc, _, _peer, _ = env
     resp = tc.post("/api/runs/5/cancel", params={"instance": "mace"})
     assert resp.status_code == 409
     assert resp.json() == {"detail": "not cancellable"}
@@ -557,6 +557,26 @@ def test_follow_streams_appended_lines_until_finish(solo, tmp_path, monkeypatch)
     data = [e["data"] for e in events if e.get("event", "message") == "message"]
     assert data == ["first", "second", "third"]
     assert events[-1] == {"event": "end", "data": "succeeded"}
+
+
+def test_follow_reads_in_bounded_chunks_and_still_reads_to_the_end(solo, tmp_path, monkeypatch):
+    tc, _, store = solo
+    monkeypatch.setattr(api, "LOG_FOLLOW_CHUNK", 4)
+    sizes = []
+    real = api._read_from
+
+    def spy(path, offset, limit):
+        data = real(path, offset, limit)
+        sizes.append(len(data))
+        return data
+
+    monkeypatch.setattr(api, "_read_from", spy)
+    job = log_job(store, tmp_path, b"one\ntwo\nthree\npartial")
+    events = sse(tc, f"/api/runs/{job.id}/log", follow=1)
+    data = [e["data"] for e in events if e.get("event", "message") == "message"]
+    assert data == ["one", "two", "three", "partial"]
+    assert events[-1] == {"event": "end", "data": "succeeded"}
+    assert sizes and max(sizes) <= 4
 
 
 def test_follow_honours_since(solo, tmp_path):

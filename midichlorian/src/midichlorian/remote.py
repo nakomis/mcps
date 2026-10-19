@@ -32,7 +32,7 @@ async def run(
         return RunResult(127, "", str(exc))
     try:
         out, err = await asyncio.wait_for(proc.communicate(stdin), timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
         await proc.wait()

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import os
 from pathlib import Path
 
@@ -152,7 +153,8 @@ echo finished
             break
         await asyncio.sleep(0.02)
     assert log.read_text() == "started\nfinished\n"  # no broken pipe: it writes the log itself
-    os.waitpid(pid, 0)  # reap it, as the pidfile check on the next start would find it gone
+    with contextlib.suppress(ChildProcessError):  # subprocess may have reaped it already
+        os.waitpid(pid, 0)  # noqa: ASYNC222 — the child has already exited; this only reaps it
 
 
 def pid_file(repo: Path) -> Path:

@@ -5,11 +5,10 @@ import re
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from test_api import FakeCoordinator, settings
 
 from midichlorian import api
 from midichlorian.store import Store
-from test_api import FakeCoordinator, settings
-
 
 
 def ids_used_by_app(client):

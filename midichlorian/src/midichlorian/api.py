@@ -40,6 +40,7 @@ PRINTER_CACHE_SECONDS = 30.0
 SERVING_CACHE_SECONDS = 60.0
 LOG_PAGE_BYTES = 256 * 1024
 LOG_POLL_SECONDS = 0.5
+LOG_FOLLOW_CHUNK = 256 * 1024
 HEARTBEAT_SECONDS = 15
 WEB_DIR = Path(__file__).parent / "web"
 STATIC_FILES = {
@@ -63,6 +64,16 @@ class DeployRequest(BaseModel):
     tags: list[str] | None = None
     override_printer: bool = False
     requester: str
+
+
+def _read_from(path: str, offset: int, limit: int) -> bytes:
+    """Up to `limit` bytes of the file at `offset` (blocking: run it in a thread)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            return f.read(limit)
+    except FileNotFoundError:
+        return b""
 
 
 def _version() -> str:
@@ -166,7 +177,7 @@ class _PrinterCache:
                 try:
                     states = [asdict(s) for s in await self._probes.states()]
                     self._value = (states, None)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 — reported in /api/hosts, never raised
                     logger.warning("printer probe failed: %s", type(exc).__name__)
                     self._value = ([], f"{type(exc).__name__}: {exc}")
                 self._at = now
@@ -369,24 +380,25 @@ def create_app(
             finished = job is None or job.state in _TERMINAL
             data = b""
             if job is not None and job.log_path:
-                try:
-                    with open(job.log_path, "rb") as f:
-                        f.seek(offset)
-                        data = f.read()
-                except FileNotFoundError:
-                    pass
+                # bounded, and off the event loop: a long log never stalls the server
+                data = await asyncio.to_thread(
+                    _read_from, job.log_path, offset, LOG_FOLLOW_CHUNK
+                )
+            more = len(data) == LOG_FOLLOW_CHUNK  # there may be more to read at once
             offset += len(data)
             pending += data
             *lines, pending = pending.split(b"\n")
-            if finished and pending:
+            done = finished and not more
+            if done and pending:
                 lines.append(pending)
                 pending = b""
             for line in lines:
                 yield {"data": line.decode("utf-8", errors="replace").rstrip("\r")}
-            if finished:
+            if done:
                 yield {"event": "end", "data": job.state if job else "gone"}
                 return
-            await asyncio.sleep(LOG_POLL_SECONDS)
+            if not more:
+                await asyncio.sleep(LOG_POLL_SECONDS)
 
     # --- writes ----------------------------------------------------------------------
 

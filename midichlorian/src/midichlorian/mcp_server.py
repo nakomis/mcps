@@ -303,7 +303,7 @@ class Service:
             await self._follow_inner(plan)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("follower crashed")
             ids = ", ".join(f"{t.host} #{t.job_id}" for t in plan.current)
             await self._say(f"I lost track of {ids}: my follower crashed. Check {UI_URL}.")
