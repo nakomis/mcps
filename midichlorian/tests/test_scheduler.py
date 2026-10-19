@@ -1,4 +1,4 @@
-from midichlorian.scheduler import covers, merge_target, next_runnable, widen_tags
+from midichlorian.scheduler import covers, merge_target, next_runnable
 from midichlorian.store import Job
 
 
@@ -31,12 +31,6 @@ def test_covers():
     assert not covers(True, ["a"], ["a", "b"])
     assert not covers(True, ["a"], None)
     assert not covers(False, None, None)
-
-
-def test_widen_tags():
-    assert widen_tags(["b"], ["a"]) == ["a", "b"]
-    assert widen_tags(None, ["a"]) is None
-    assert widen_tags(["a"], None) is None
 
 
 def test_merge_into_queued_not_running():
@@ -98,3 +92,28 @@ def test_skipped_job_does_not_block_other_request_on_host():
 def test_chain_with_second_host_failed_skips_third_only():
     runnable, skip = next_runnable(chain("succeeded", "failed", "queued"))
     assert runnable == [] and ids(skip) == [3]
+
+
+def test_to_skip_never_contains_running_or_succeeded():
+    _, skip = next_runnable(chain("failed", "running", "succeeded"))
+    assert skip == []
+
+
+def test_waiting_job_at_later_position():
+    runnable, skip = next_runnable(chain("succeeded", "waiting", "queued"))
+    assert ids(runnable) == [2] and skip == []
+    runnable, skip = next_runnable(chain("queued", "waiting"))
+    assert ids(runnable) == [1] and skip == []
+
+
+def test_merge_target_empty_and_ignores_later_position():
+    assert merge_target([], "luke", None) is None
+    assert merge_target([job(1, position=1)], "luke", None) is None
+
+
+def test_fifo_among_eligible_blocked_lower_id_does_not_block():
+    blocked = job(1, host="leia", request=1, position=1)
+    first = job(0, host="luke", request=1, position=0, state="running")
+    other = job(5, host="leia", request=2)
+    runnable, _ = next_runnable([first, blocked, other])
+    assert ids(runnable) == [5]

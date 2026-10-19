@@ -14,7 +14,9 @@ BASE = {
 
 
 def test_defaults_and_parsing():
-    s = load_settings({**BASE, "MIDICHLORIAN_PEERS": "mace=http://mace.local:9140, x=http://x"})
+    s = load_settings(
+        {**BASE, "MIDICHLORIAN_PEERS": "mace=http://mace.local:9140, x=http://x"}
+    )
     assert s.instance == "cere"
     assert s.served == frozenset({"luke", "leia"})
     assert s.data_dir == Path("/d") and s.repo_dir == Path("/r")
@@ -24,7 +26,9 @@ def test_defaults_and_parsing():
 
 
 def test_no_peers_and_overrides():
-    s = load_settings({**BASE, "MIDICHLORIAN_BIND": "127.0.0.1", "MIDICHLORIAN_PORT": "1"})
+    s = load_settings(
+        {**BASE, "MIDICHLORIAN_BIND": "127.0.0.1", "MIDICHLORIAN_PORT": "1"}
+    )
     assert s.peers == {} and s.bind == "127.0.0.1" and s.port == 1
 
 

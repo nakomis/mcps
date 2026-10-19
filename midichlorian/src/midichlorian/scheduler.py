@@ -29,13 +29,6 @@ def covers(
     return set(want_tags) <= set(done_tags)
 
 
-def widen_tags(a: list[str] | None, b: list[str] | None) -> list[str] | None:
-    """Union of two tag sets; None (a full run) wins."""
-    if a is None or b is None:
-        return None
-    return sorted(set(a) | set(b))
-
-
 def merge_target(
     queued: list[Job], host: str, want_tags: list[str] | None
 ) -> Job | None:
@@ -43,7 +36,8 @@ def merge_target(
 
     Only queued/waiting jobs, never running ones, and only the first host of
     their request (merging into a mid-chain job would make an independent
-    request wait on someone else's earlier hosts). Oldest wins.
+    request wait on someone else's earlier hosts). Oldest wins. `want_tags` is
+    not checked here: the caller widens the tags (any queued job can absorb more).
     """
     candidates = [
         j for j in queued if j.host == host and j.state in _PENDING and j.position == 0
@@ -57,6 +51,8 @@ def next_runnable(jobs: list[Job]) -> tuple[list[Job], list[Job]]:
     runnable: at most one job per host, oldest first, and none for a host that
     already has a running job. A job at position > 0 is only eligible once every
     earlier job of its request has succeeded or been found already deployed.
+    Caller contract: every non-terminal earlier-position job of a request must be
+    in the input; earlier positions that are missing count as satisfied.
     to_skip: queued/waiting jobs whose request has an earlier failed, cancelled,
     interrupted or skipped job.
     """

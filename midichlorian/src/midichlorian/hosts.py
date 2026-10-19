@@ -16,7 +16,9 @@ class HostSpec:
     needs_backup_gate: bool
 
 
-def _host(name, *, ro_root=True, linux=True, docker=True, printer="never", backup=False):
+def _host(
+    name, *, ro_root=True, linux=True, docker=True, printer="never", backup=False
+):
     return HostSpec(
         name=name,
         ssh=f"{name}.local",

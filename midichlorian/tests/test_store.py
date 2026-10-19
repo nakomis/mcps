@@ -8,7 +8,15 @@ def store(tmp_path):
     return Store(tmp_path / "m.db")
 
 
-def make_job(store, host="luke", sha="a" * 40, tags=None, position=0, requester="martin", override=False):
+def make_job(
+    store,
+    host="luke",
+    sha="a" * 40,
+    tags=None,
+    position=0,
+    requester="martin",
+    override=False,
+):
     rid = store.create_request([host], sha, tags, override, requester)
     return store.add_job(rid, host, sha, tags, position, override, requester)
 
@@ -80,8 +88,14 @@ def test_set_state_fields(store):
     store.set_state(job.id, "running", started="t1", log_path="/l")
     store.set_state(job.id, "failed", finished="t2", result="boom", detail={"rc": 2})
     got = store.get_job(job.id)
-    assert (got.state, got.started, got.finished, got.result, got.detail, got.log_path) == (
-        "failed", "t1", "t2", "boom", {"rc": 2}, "/l")
+    assert (
+        got.state,
+        got.started,
+        got.finished,
+        got.result,
+        got.detail,
+        got.log_path,
+    ) == ("failed", "t1", "t2", "boom", {"rc": 2}, "/l")
 
 
 def test_set_state_rejects_unknown(store):
@@ -101,7 +115,10 @@ def test_jobs_filters_newest_first(store):
     assert [j.id for j in store.jobs()] == [c.id, b.id, a.id]
     assert [j.id for j in store.jobs(host="luke")] == [c.id, a.id]
     assert [j.id for j in store.jobs(states=["queued"])] == [c.id, b.id]
-    assert [j.id for j in store.jobs(host="luke", states=["queued", "succeeded"])] == [c.id, a.id]
+    assert [j.id for j in store.jobs(host="luke", states=["queued", "succeeded"])] == [
+        c.id,
+        a.id,
+    ]
     assert [j.id for j in store.jobs(limit=1)] == [c.id]
 
 
@@ -150,3 +167,11 @@ def test_persists_across_instances(tmp_path):
     s1 = Store(tmp_path / "m.db")
     job = make_job(s1)
     assert Store(tmp_path / "m.db").get_job(job.id) == job
+
+
+def test_widen_tags():
+    from midichlorian.store import widen_tags
+
+    assert widen_tags(["b"], ["a"]) == ["a", "b"]
+    assert widen_tags(None, ["a"]) is None
+    assert widen_tags(["a"], None) is None
