@@ -45,7 +45,7 @@ Read by `midichlorian-server` (`config.py`, `api.py`, `runner.py`).
 | `MIDICHLORIAN_PEERS` | no | `name=url,name=url` of the other instances |
 | `MIDICHLORIAN_BIND` | no | Listen address (default `0.0.0.0`) |
 | `MIDICHLORIAN_PORT` | no | Listen port (default `9140`) |
-| `MIDICHLORIAN_OCTOPRINT_KEY` | no | OctoPrint API key for the printer-busy check; if unset it is read from SSM, and if that fails the Prusa reads as unreachable (with a warning) |
+| `MIDICHLORIAN_OCTOPRINT_KEY` | no | OctoPrint API key for the printer-busy check; if unset it is read from SSM. If neither yields a key, it is asked for again at most every 5 minutes; until then, while OctoPrint's container is running, the Prusa's state is unreadable and Leia's runs wait |
 | `GH_TOKEN` | no | Not read by name: the server's environment is inherited by gates and playbook runs, so a GitHub token set here is what git uses |
 | `AWS_CONFIG_FILE` | no | Not read by name: inherited by the SSM reads and playbook runs like the rest of the environment |
 
@@ -89,7 +89,11 @@ cd midichlorian && uv run pytest -q
   fetches before checking, so a commit newer than its clone is accepted.
 - Nothing runs against a printer-sensitive target (`rey`, `leia`, and `luke` full
   or `samba` runs) while a 3D print is in progress; the run waits. A printer that
-  cannot be reached is treated as idle, with a note.
+  cannot be reached (connection refused or timed out, ssh down, OctoPrint's
+  container not running) is treated as idle, with a note. A printer that answers
+  but whose state cannot be read (no or wrong OctoPrint key, an HTTP error, junk)
+  holds the run as if busy ("state unreadable") until it can be read or Martin
+  overrides.
 - `override_printer` bypasses that hold. A session sets it only when Martin has
   explicitly said so in that session.
 - A running playbook is never interrupted. Only queued or waiting runs can be

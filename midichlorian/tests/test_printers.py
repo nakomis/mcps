@@ -44,11 +44,51 @@ async def test_cthulhu_connection_error():
     assert not s.busy and not s.reachable and s.detail
 
 
-async def test_cthulhu_bad_json_and_http_error():
-    async with client(lambda r: httpx.Response(200, text="nope")) as c:
-        assert not (await cthulhu_state(c)).reachable
-    async with client(lambda r: httpx.Response(500)) as c:
-        assert not (await cthulhu_state(c)).reachable
+async def test_cthulhu_junk_or_http_error_from_a_reachable_server_holds():
+    # R25: Cthulhu answered, but we cannot read its state: fail closed.
+    for handler in (
+        lambda r: httpx.Response(200, text="nope"),
+        lambda r: httpx.Response(200, json=["a list"]),
+        lambda r: httpx.Response(500),
+        lambda r: httpx.Response(404),
+    ):
+        async with client(handler) as c:
+            s = await cthulhu_state(c)
+        assert s.busy and s.reachable
+        assert s.detail.startswith("Cthulhu state unreadable: ")
+
+
+async def test_cthulhu_timeout_is_idle_and_unreachable():
+    def slow(req):
+        raise httpx.ReadTimeout("slow")
+
+    async with client(slow) as c:
+        s = await cthulhu_state(c)
+    assert not s.busy and not s.reachable
+
+
+async def test_cthulhu_url_is_passed_through():
+    seen = []
+
+    def handler(req):
+        seen.append(str(req.url))
+        return httpx.Response(200, json={"connected": True, "print": None})
+
+    async with client(handler) as c:
+        await cthulhu_state(c, "http://example.test:1/api/status")
+    assert seen == ["http://example.test:1/api/status"]
+
+
+def key_resolver(*keys):
+    """An async resolver returning each of keys in turn (then the last one), counting calls."""
+    calls = []
+
+    async def resolve():
+        calls.append(1)
+        return keys[min(len(calls), len(keys)) - 1]
+
+    resolve.calls = calls
+    return resolve
 
 
 def fake_ssh(running="true\n", job='{"state": "Printing"}', rc=0, log=None):
@@ -82,24 +122,55 @@ async def test_octoprint_container_stopped():
     assert not s.busy and s.reachable
 
 
-async def test_octoprint_no_key_does_not_probe():
+async def test_octoprint_no_key_with_container_running_holds():
     log = []
     for key in ("", None):
         s = await octoprint_state(fake_ssh(log=log), LEIA, key)
-        assert (s.busy, s.reachable, s.detail) == (False, False, "no OctoPrint API key")
-    assert log == []
+        assert s.busy and s.reachable
+        assert s.detail == "OctoPrint state unreadable: no API key"
+    # only the container check ran: there is no key to send
+    assert log and all("docker inspect" in c for c, _ in log)
 
 
-async def test_octoprint_ssh_failure_and_bad_json():
+async def test_octoprint_no_key_with_container_stopped_is_idle():
+    s = await octoprint_state(fake_ssh(running="false\n"), LEIA, None)
+    assert not s.busy and s.reachable and "not running" in s.detail
+
+
+async def test_octoprint_ssh_unreachable_is_idle():
     s = await octoprint_state(fake_ssh(rc=255), LEIA, "k")
     assert not s.busy and not s.reachable
-    s = await octoprint_state(fake_ssh(job="<html>"), LEIA, "k")
+    s = await octoprint_state(fake_ssh(rc=255), LEIA, None)
     assert not s.busy and not s.reachable
+
+
+async def test_octoprint_unreadable_state_holds_and_never_shows_the_key():
+    bodies = [
+        "<html>",  # unparsable
+        '{"error": "Forbidden"}',  # 401/403 body: no state
+        '{"state": 5}',  # malformed
+        '["state"]',  # not an object
+    ]
+    for body in bodies:
+        s = await octoprint_state(fake_ssh(job=body), LEIA, "sekrit")
+        assert s.busy and s.reachable, body
+        assert s.detail.startswith("OctoPrint state unreadable: ")
+        assert "sekrit" not in s.detail
+
+
+async def test_octoprint_job_command_failure_holds():
+    async def ssh(host, command, timeout=60, stdin=None):
+        if "docker inspect" in command:
+            return remote.RunResult(0, "true\n", "")
+        return remote.RunResult(7, "", "curl: (7) Failed to connect")
+
+    s = await octoprint_state(ssh, LEIA, "k")
+    assert s.busy and s.detail.startswith("OctoPrint state unreadable: ")
 
 
 async def test_probes_states():
     async with client(status("Idle")) as c:
-        states = await Probes(c, LEIA, fake_ssh(), "k").states()
+        states = await Probes(c, LEIA, fake_ssh(), key_resolver("k")).states()
     assert [s.name for s in states] == ["cthulhu", "octoprint"]
     assert [s.busy for s in states] == [False, True]
 
@@ -116,7 +187,7 @@ async def test_cthulhu_malformed_print_payload():
     ):
         async with client(lambda r, p=payload: httpx.Response(200, json=p)) as c:
             s = await cthulhu_state(c)
-        assert not s.busy and not s.reachable and s.detail
+        assert s.busy and s.reachable and s.detail.startswith("Cthulhu state unreadable: ")
 
 
 async def test_octoprint_missing_container_is_idle_and_reachable():
@@ -125,3 +196,45 @@ async def test_octoprint_missing_container_is_idle_and_reachable():
 
     s = await octoprint_state(ssh, LEIA, "k")
     assert not s.busy and s.reachable and "not running" in s.detail
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+async def test_probes_resolve_a_missing_key_lazily_at_most_every_five_minutes():
+    resolver = key_resolver(None, None, "late")
+    clock = Clock()
+    log = []
+    async with client(status("Idle")) as c:
+        probes = Probes(c, LEIA, fake_ssh(log=log), resolver, clock=clock)
+        first = await probes.states()
+        assert first[1].detail == "OctoPrint state unreadable: no API key"
+        assert len(resolver.calls) == 1
+        clock.now += 60
+        await probes.states()  # too soon to ask again
+        assert len(resolver.calls) == 1
+        clock.now += 240
+        await probes.states()  # five minutes on: asks, still nothing
+        assert len(resolver.calls) == 2
+        clock.now += 300
+        later = await probes.states()  # asks again and gets it
+        assert len(resolver.calls) == 3
+        assert later[1].busy and later[1].detail == "Prusa: Printing"
+        clock.now += 3600
+        await probes.states()  # a key in hand is never re-resolved
+        assert len(resolver.calls) == 3
+    assert log[-1][1] == b"late\n"
+
+
+async def test_probes_resolver_error_counts_as_no_key():
+    async def broken():
+        raise RuntimeError("sts down")
+
+    async with client(status("Idle")) as c:
+        states = await Probes(c, LEIA, fake_ssh(), broken).states()
+    assert states[1].busy and "no API key" in states[1].detail

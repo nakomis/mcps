@@ -446,7 +446,8 @@ OCTOPRINT_SSM = [
 
 async def resolve_octoprint_key(env=os.environ, run=remote.run) -> str | None:
     """The OctoPrint API key: from the environment, else SSM. None (with a warning that
-    never contains the key) when it cannot be had; the probe then reports unreachable."""
+    never contains the key) when it cannot be had; while OctoPrint is running, the probe
+    then reports its state unreadable, which holds Leia's runs (R25)."""
     key = env.get("MIDICHLORIAN_OCTOPRINT_KEY", "").strip()
     if key:
         return key
@@ -454,12 +455,14 @@ async def resolve_octoprint_key(env=os.environ, run=remote.run) -> str | None:
     key = result.stdout.strip()
     if result.rc != 0 or not key:
         why = result.stderr.strip() or f"rc {result.rc}"
-        logger.warning("OctoPrint API key unavailable, the Prusa will read as unreachable: %s", why)
+        logger.warning("OctoPrint API key unavailable, Prusa state unreadable: %s", why)
         return None
     return key
 
 
-def build_app(settings: Settings, octoprint_key: str | None) -> FastAPI:
+def build_app(settings: Settings, octoprint_key=resolve_octoprint_key) -> FastAPI:
+    """`octoprint_key` is the async key resolver; Probes calls it lazily, and again while
+    the key is missing."""
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     store = Store(settings.data_dir / "midichlorian.db")
     probes = Probes(httpx.AsyncClient(), HOSTS["leia"], remote.ssh, octoprint_key)
@@ -472,5 +475,4 @@ def build_app(settings: Settings, octoprint_key: str | None) -> FastAPI:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     settings = load_settings()
-    key = asyncio.run(resolve_octoprint_key())
-    uvicorn.run(build_app(settings, key), host=settings.bind, port=settings.port)
+    uvicorn.run(build_app(settings), host=settings.bind, port=settings.port)

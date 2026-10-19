@@ -1,5 +1,8 @@
+import httpx
+
 from midichlorian import gates, remote
-from midichlorian.printers import PrinterState
+from midichlorian.hosts import HOSTS
+from midichlorian.printers import PrinterState, Probes
 
 
 class FakeProbes:
@@ -100,3 +103,48 @@ async def test_backup_success_string_on_stderr():
         return remote.RunResult(0, "", "All databases backed up and verified")
 
     assert (await gates.run_luke_backups(ssh)).ok
+
+
+# --- the gate with the real probes (R25: unreadable holds, unreachable does not) ---
+
+
+def _real_probes(cthulhu, octo_body="{\"state\": \"Operational\"}", key="k"):
+    async def ssh(host, command, timeout=60, stdin=None):
+        if "docker inspect" in command:
+            return remote.RunResult(0, "true\n", "")
+        return remote.RunResult(0, octo_body, "")
+
+    async def resolver():
+        return key
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(cthulhu))
+    return Probes(client, HOSTS["leia"], ssh, resolver)
+
+
+def _cthulhu_idle(req):
+    return httpx.Response(200, json={"connected": True, "print": {"statusLabel": "Idle"}})
+
+
+async def test_leia_waits_with_no_key_while_octoprint_runs():
+    g = await gates.check_printers("leia", None, False, _real_probes(_cthulhu_idle, key=None))
+    assert g.wait and "OctoPrint state unreadable: no API key" in g.reason
+
+
+async def test_leia_waits_on_a_403_body():
+    p = _real_probes(_cthulhu_idle, octo_body='{"error": "Forbidden"}')
+    g = await gates.check_printers("leia", None, False, p)
+    assert g.wait and "OctoPrint state unreadable" in g.reason
+
+
+async def test_rey_waits_on_cthulhu_500():
+    p = _real_probes(lambda r: httpx.Response(500))
+    g = await gates.check_printers("rey", None, False, p)
+    assert g.wait and "Cthulhu state unreadable: HTTP 500" in g.reason
+
+
+async def test_rey_proceeds_when_cthulhu_refuses_connections():
+    def refused(req):
+        raise httpx.ConnectError("refused")
+
+    g = await gates.check_printers("rey", None, False, _real_probes(refused))
+    assert g.ok and not g.wait
