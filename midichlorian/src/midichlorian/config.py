@@ -8,6 +8,7 @@ from pathlib import Path
 from midichlorian.hosts import HOSTS
 
 DEFAULT_REPO_URL = "https://github.com/nakomis/home-infra.git"
+DEFAULT_CTHULHU_URL = "http://rey.local:9120/api/status"
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,7 @@ class Settings:
     peers: dict[str, str]
     bind: str
     port: int
+    cthulhu_url: str = DEFAULT_CTHULHU_URL
 
 
 def _required(env: Mapping[str, str], key: str) -> str:
@@ -63,4 +65,5 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
         peers=_parse_peers(env.get("MIDICHLORIAN_PEERS", "")),
         bind=env.get("MIDICHLORIAN_BIND") or "0.0.0.0",
         port=int(env.get("MIDICHLORIAN_PORT") or 9140),
+        cthulhu_url=env.get("MIDICHLORIAN_CTHULHU_URL") or DEFAULT_CTHULHU_URL,
     )

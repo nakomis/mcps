@@ -50,3 +50,9 @@ def test_served_names_must_be_known_hosts():
 def test_peer_names_need_not_be_hosts():
     s = load_settings({**BASE, "MIDICHLORIAN_PEERS": "elsewhere=http://e"})
     assert s.peers == {"elsewhere": "http://e"}
+
+
+def test_cthulhu_url_default_and_override():
+    assert load_settings(BASE).cthulhu_url == "http://rey.local:9120/api/status"
+    s = load_settings({**BASE, "MIDICHLORIAN_CTHULHU_URL": "http://cthulhu.test/api/status"})
+    assert s.cthulhu_url == "http://cthulhu.test/api/status"

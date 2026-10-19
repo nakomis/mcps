@@ -51,6 +51,7 @@ Read by `midichlorian-server` (`config.py`, `api.py`, `runner.py`).
 | `MIDICHLORIAN_BIND` | no | Listen address (default `0.0.0.0`) |
 | `MIDICHLORIAN_PORT` | no | Listen port (default `9140`) |
 | `MIDICHLORIAN_OCTOPRINT_KEY` | no | OctoPrint API key for the printer-busy check; if unset it is read from SSM. If neither yields a key, it is asked for again at most every 5 minutes; until then, while OctoPrint's container is running, the Prusa's state is unreadable and Leia's runs wait |
+| `MIDICHLORIAN_CTHULHU_URL` | no | Cthulhu's status endpoint for the resin printer check (default `http://rey.local:9120/api/status`). If it cannot be reached, Rey's runs are not held, so check it resolves from the coordinating host |
 | `GH_TOKEN` | no | Not read by name: the server's environment is inherited by gates and playbook runs, so a GitHub token set here is what git uses |
 | `AWS_CONFIG_FILE` | no | Not read by name: inherited by the SSM reads and playbook runs like the rest of the environment |
 

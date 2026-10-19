@@ -505,7 +505,13 @@ def build_app(settings: Settings, octoprint_key=resolve_octoprint_key) -> FastAP
     the key is missing."""
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     store = Store(settings.data_dir / "midichlorian.db")
-    probes = Probes(httpx.AsyncClient(), HOSTS["leia"], remote.ssh, octoprint_key)
+    probes = Probes(
+        httpx.AsyncClient(),
+        HOSTS["leia"],
+        remote.ssh,
+        octoprint_key,
+        cthulhu_url=settings.cthulhu_url,
+    )
     coordinator = Coordinator(
         settings,
         store,

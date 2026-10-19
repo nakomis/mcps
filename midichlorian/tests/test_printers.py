@@ -238,3 +238,23 @@ async def test_probes_resolver_error_counts_as_no_key():
     async with client(status("Idle")) as c:
         states = await Probes(c, LEIA, fake_ssh(), broken).states()
     assert states[1].busy and "no API key" in states[1].detail
+
+
+async def test_probes_ask_the_configured_cthulhu_url():
+    seen = []
+
+    def handler(req):
+        seen.append(str(req.url))
+        return httpx.Response(200, json={"connected": True, "print": None})
+
+    async with client(handler) as c:
+        await Probes(c, LEIA, fake_ssh(), key_resolver("k"), cthulhu_url="http://c.test/s").states()
+    assert seen == ["http://c.test/s"]
+
+
+def test_no_private_address_in_the_source():
+    import inspect
+
+    from midichlorian import printers
+
+    assert "172.29." not in inspect.getsource(printers)

@@ -17,11 +17,11 @@ from dataclasses import dataclass
 
 import httpx
 
+from midichlorian.config import DEFAULT_CTHULHU_URL
 from midichlorian.hosts import HostSpec
 
 logger = logging.getLogger(__name__)
 
-CTHULHU_URL = "http://172.29.0.36:9120/api/status"
 CTHULHU_IDLE = {"", "Idle", "Complete", "Stopped", "Cancelled"}
 OCTOPRINT_BUSY = {"Printing", "Pausing", "Paused", "Resuming", "Cancelling", "Finishing"}
 OCTOPRINT_CONTAINER = "gateway-octoprint-1"
@@ -44,7 +44,9 @@ class PrinterState:
     reachable: bool
 
 
-async def cthulhu_state(client: httpx.AsyncClient, url: str = CTHULHU_URL) -> PrinterState:
+async def cthulhu_state(
+    client: httpx.AsyncClient, url: str = DEFAULT_CTHULHU_URL
+) -> PrinterState:
     def unreadable(why: str) -> PrinterState:
         return PrinterState("cthulhu", True, f"Cthulhu state unreadable: {why}", True)
 
@@ -135,9 +137,11 @@ class Probes:
         ssh,
         key_resolver: Callable[[], Awaitable[str | None]],
         *,
+        cthulhu_url: str = DEFAULT_CTHULHU_URL,
         clock: Callable[[], float] = time.monotonic,
     ):
         self._client = client
+        self._cthulhu_url = cthulhu_url
         self._leia = leia
         self._ssh = ssh
         self._resolve = key_resolver
@@ -159,6 +163,6 @@ class Probes:
 
     async def states(self) -> list[PrinterState]:
         return [
-            await cthulhu_state(self._client),
+            await cthulhu_state(self._client, self._cthulhu_url),
             await octoprint_state(self._ssh, self._leia, await self._api_key()),
         ]
