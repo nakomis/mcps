@@ -83,9 +83,6 @@ and tells the requesting session when it is done.
 Code lives in `mcps/midichlorian/`: one uv project (hatchling), two entry points (`midichlorian-server`,
 `midichlorian-mcp`), pytest, matching the other MCPs in the repo.
 
-Prior art: `claude-bus-mcp` (a NATS-based lease and messaging bus) is not used; midichlorian owns its queue
-directly and needs no shared bus.
-
 ## A run, step by step
 
 1. **Request.** `POST /api/deploy` with `{hosts: [...], sha, tags?, override_printer?, requester}`.
