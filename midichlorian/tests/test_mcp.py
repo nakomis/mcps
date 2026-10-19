@@ -426,3 +426,12 @@ async def test_a_single_404_is_tolerated(svc, estate, sent):
     svc._client._transport = httpx.MockTransport(flaky)
     await svc.wait_idle()
     assert len(sent) == 1 and "succeeded" in sent[0]
+
+
+async def test_later_group_gets_the_commit_group_one_deployed(svc, estate):
+    """R28: the next group is pinned to what was deployed, not to what was requested."""
+    await svc.deploy(["luke", "cere"])
+    done(estate, "cere", 70, "luke", deployed_sha=NEW_SHA)  # main moved on before luke ran
+    done(estate, "mace", 5, "cere")
+    await svc.wait_idle()
+    assert estate.posts[1][1]["sha"] == NEW_SHA

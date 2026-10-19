@@ -375,8 +375,10 @@ class Service:
         if not plan.later or not ok:
             await self._say(text)
             return True
-        # The next group runs on another instance, at the commit this one deployed.
-        sha = plan.current[0].job.get("sha")
+        # The next group runs on another instance, at the commit this one deployed
+        # (a full sha, which the server deploys exactly: R28).
+        first = plan.current[0].job
+        sha = (first.get("detail") or {}).get("deployed_sha") or first.get("sha")
         if not sha:
             await self._say(
                 f"{text}\n\nNot submitted: the finished job reported no sha, so I cannot pin the "
@@ -518,8 +520,10 @@ async def deploy(
     hosts: run in order; if one fails, later ones are skipped. Hosts on different instances
         (cere serves luke leia cal mace rey; mace serves cere) are submitted in groups, each
         only after the previous group succeeded.
-    sha: "main" (the default) means origin/main's head, resolved by the server; or a commit
-        on main.
+    sha: "main" (the default) means origin/main's head when each run starts; or a commit
+        on main. A full 40-character sha deploys exactly that commit; anything shorter
+        deploys main's head once the commit is on main. Every host of one deploy gets
+        the commit the first host deployed.
     tags: limit the run to these playbook tags; omit for a full run.
     override_printer: run despite a print in progress on a printer-sensitive host (rey, leia,
         and every luke run, tagged or not, unless all its tags are on the server's

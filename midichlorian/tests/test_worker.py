@@ -876,6 +876,62 @@ async def test_restart_marks_running_interrupted_and_queue_continues(w):
     assert len(w.runner.calls) == 1
 
 
+# --- R28: a multi-host request deploys one commit ---------------------------------------
+
+A, B, C, D = ("a" * 40, "b" * 40, "c" * 40, "d" * 40)
+
+
+async def test_later_hosts_deploy_the_commit_the_first_host_deployed(w):
+    w.runner.gate = asyncio.Event()
+    c = w.coordinator()
+    res = await c.submit(["luke", "leia"], "main", None, False, "s")
+    await c.tick()
+    await until(lambda: w.runner.active == 1)
+    w.git.remote.append("d")  # another session merges while Luke runs
+    w.runner.gate.set()
+    await settle(c, rounds=4)
+    luke, leia = (w.job(j["job_id"]) for j in res.jobs)
+    assert (luke.state, leia.state) == ("succeeded", "succeeded")
+    assert luke.detail["deployed_sha"] == "c"
+    assert leia.detail["deployed_sha"] == "c"  # not main's new head, d
+    assert [call["sha"] for call in w.runner.calls] == ["c", "c"]
+
+
+async def test_explicit_full_sha_deploys_exactly_that_commit(w):
+    w.git = FakeGit(history=(A, B, C))
+    w.runner.git = w.git
+    c = w.coordinator()
+    pinned = (await c.submit(["cal"], B, None, False, "s")).jobs[0]["job_id"]
+    await settle(c)
+    assert w.job(pinned).detail["deployed_sha"] == B
+    assert w.runner.calls[-1]["sha"] == B
+    head = (await c.submit(["mace"], "main", None, False, "s")).jobs[0]["job_id"]
+    await settle(c)
+    assert w.job(head).detail["deployed_sha"] == C
+
+
+async def test_full_sha_older_than_a_deployed_host_is_already(w):
+    w.git = FakeGit(history=(A, B, C))
+    w.runner.git = w.git
+    w.store.record_deploy("cal", C, None, "2026-10-19T09:00:00Z")
+    c = w.coordinator()
+    res = await c.submit(["cal"], B, None, False, "s")
+    assert states(res) == ["already"]  # never rolls a host back
+
+
+async def test_pinned_request_never_merges(w):
+    w.git = FakeGit(history=(A, B, C))
+    w.runner.git = w.git
+    w.probes.busy = True  # hold leia so the first job stays queued/waiting
+    c = w.coordinator()
+    first = await c.submit(["leia"], "main", None, False, "s1")
+    await settle(c)
+    second = await c.submit(["leia"], B, None, False, "s2")
+    assert not second.jobs[0]["merged"]
+    third = await c.submit(["leia"], "main", None, False, "s3")
+    assert third.jobs[0]["merged"] and third.jobs[0]["job_id"] == first.jobs[0]["job_id"]
+
+
 # --- R27: a restart never cuts a playbook off ---------------------------------------------
 
 

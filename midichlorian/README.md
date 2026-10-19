@@ -26,6 +26,11 @@ merges its peers' reads. A `deploy` that spans both instances is submitted in
 groups, each only after the previous group succeeded. If the first host of a
 request fails, the later hosts are marked `skipped` and every requester is told.
 
+A run deploys `origin/main`'s head as it starts, unless the request named a full
+40-character sha, which is deployed exactly. Every later host of a request, on
+either instance, gets the commit its first host deployed, so a rollout is one
+commit even if main moves on meanwhile.
+
 When a run ends (or first starts waiting on a printer), the MCP pushes a message
 beginning `[midichlorian]` into the requesting Claude session, so there is no
 need to poll.

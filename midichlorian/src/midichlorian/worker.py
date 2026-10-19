@@ -2,10 +2,15 @@
 verifies and records each job.
 
 Concurrency: one asyncio task per in-flight job; different hosts run at once,
-one job per host. Every run gets its own git worktree (at origin/main's head)
-under `<data_dir>/worktrees/<job_id>`, so a fetch or another host's run never
+one job per host. Every run gets its own git worktree under `<data_dir>/worktrees/<job_id>`, so a fetch or another host's run never
 changes the files under a running playbook. Operations on the shared clone
 (fetch, worktree add/remove) are serialised by one lock.
+
+Which commit a run deploys (R28): origin/main's head at the time it starts, except
+that a request for an explicit full 40-hex sha deploys exactly that sha ("pinned";
+such requests never merge), and every later host of a multi-host request deploys
+the commit its first host deployed, so a rollout is one commit however far main
+moves meanwhile.
 
 Shutdown (R27): cancelling a job task never stops its playbook, which finishes in
 its own session; its worktree is left in place, and a restart marks the job
@@ -38,6 +43,7 @@ _PENDING = ("queued", "waiting")
 _ACTIVE = ("queued", "waiting", "running")
 _BROKEN = ("failed", "cancelled", "interrupted", "skipped")
 _TAG = re.compile(r"^[A-Za-z0-9_.-]+$")
+_FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _iso(t: datetime) -> str:
@@ -225,6 +231,7 @@ class Coordinator:
         if tags and not all(_TAG.match(t) for t in tags):
             raise ValueError("tags may only contain letters, digits, '_', '.' and '-'")
 
+        pinned = bool(_FULL_SHA.match(sha))
         refusal, warning, resolved = None, None, sha
         try:
             await self._ensure_ready()
@@ -253,6 +260,7 @@ class Coordinator:
             )
             detail = {
                 "requested_sha": resolved,
+                **({"pinned_sha": resolved} if pinned else {}),
                 "warnings": [warning] if warning else [],
                 **detail,
             }
@@ -286,6 +294,7 @@ class Coordinator:
                 )
             elif (
                 i == 0
+                and not pinned
                 and needs_run == [host]
                 and await self._merge(
                     host, resolved, tags, override_printer, requester, result
@@ -309,7 +318,9 @@ class Coordinator:
         mergeable = [
             j
             for j in self.store.jobs(host=host, states=list(_PENDING), limit=10_000)
-            if j.id not in self._inflight and j.override_printer == override
+            if j.id not in self._inflight
+            and j.override_printer == override
+            and not j.detail.get("pinned_sha")  # a pinned job deploys only its own sha
         ]
         target = merge_target(mergeable, host, tags)
         if target is None:
@@ -444,7 +455,8 @@ class Coordinator:
             self._note(job, warning)
         if not on_main:
             return self._end_pending(job_id, "failed", "not on origin/main")
-        covered = await self._covered_by(job.host, job.sha, job.tags)
+        pin = self._pin(job)
+        covered = await self._covered_by(job.host, pin or job.sha, job.tags)
         if covered:
             return self._end_pending(
                 job_id,
@@ -488,7 +500,19 @@ class Coordinator:
             return
         self._recheck_at.pop(job_id, None)
         self._set(job_id, "running", drop=("gate",), started=_iso(self.clock()))
-        await self._run(self.store.get_job(job_id), host, env)
+        await self._run(self.store.get_job(job_id), host, env, pin)
+
+    def _pin(self, job) -> str | None:
+        """The commit this job must deploy, or None for origin/main's head (R28)."""
+        if job.detail.get("pinned_sha"):
+            return job.detail["pinned_sha"]
+        if job.position == 0:
+            return None
+        first = next(
+            (j for j in self.store.request_jobs(job.request_id) if j.position == 0), None
+        )
+        # position 0 has succeeded or was already deployed, so it has a deployed_sha
+        return first.detail.get("deployed_sha") if first else None
 
     async def _held_by_printers(self, job_id: int, job) -> bool:
         """Apply the printer gate; True if the job is (still) waiting."""
@@ -536,18 +560,19 @@ class Coordinator:
             return f"could not remove worktree {path}: {exc}"
         return None
 
-    async def _run(self, job, host, env) -> None:
+    async def _run(self, job, host, env, pin: str | None = None) -> None:
         log = Path(job.log_path)
         before = await verify.snapshot(host, self.ssh)
         worktree = self.settings.data_dir / "worktrees" / str(job.id)
         try:
             async with self._git_lock:
-                head = await self.git.main_head(self._repo)
+                head = pin or await self.git.main_head(self._repo)
                 await self.git.add_worktree(self._repo, worktree, head)
         except GitError as exc:
             await self._drop_worktree(worktree)
             return self._finish(job, "failed", f"checkout failed: {exc}")
-        self._note(job, f"running {host.wrapper} at origin/main {head}")
+        where = f"pinned commit {head}" if pin else f"origin/main {head}"
+        self._note(job, f"running {host.wrapper} at {where}")
         warnings = list(job.detail.get("warnings", []))
         rc, crash = None, None
         try:
