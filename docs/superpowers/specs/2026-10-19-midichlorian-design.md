@@ -39,17 +39,19 @@ and tells the requesting session when it is done.
 ## Architecture
 
 ```
- Mac (phi / mu)                                   LAN
-┌────────────────────────────┐      HTTP+token   ┌──────────────────────────────┐
-│ Claude session             │ ────────────────▶ │ midichlorian-server on Cere   │──▶ ansible → Luke, Leia,
-│  └ meta-mcp                │                   │  (serves luke leia cal mace   │            Cal, mace, Rey
-│     └ midichlorian MCP ────┼── result ─┐       │   rey; hosts the web UI)      │
-│        (holds the session's│  pushed to│       └──────────────┬───────────────┘
-│         messaging socket)  │◀──────────┘                      │ aggregates
-└────────────────────────────┘                   ┌──────────────▼───────────────┐
-                                                 │ midichlorian-server on mace   │──▶ ansible → Cere
- Browser ──mTLS──▶ Leia nginx ──▶ Cere :<port>   │  (serves cere only)           │
-                                                 └──────────────────────────────┘
+ Mac (phi / mu)                                 LAN
+┌─────────────────────────────┐                 ┌───────────────────────────┐
+│ Claude session              │  HTTP + token   │ midichlorian-server: Cere │ ──▶ Luke, Leia,
+│  └ meta-mcp                 │────────────────▶│ serves luke leia cal      │     Cal, mace,
+│     └ midichlorian MCP      │                 │ mace rey; hosts web UI    │     Rey
+│       (holds the session's  │                 └─────────────┬─────────────┘
+│        messaging socket)    │◀─── result ───                │ aggregates
+└─────────────────────────────┘  (MCP follows                 │
+                                   the job)                   │
+                                                ┌─────────────▼─────────────┐
+ Browser ─mTLS▶ Leia nginx ─▶ Cere              │ midichlorian-server: mace │ ──▶ Cere
+                                                │ serves cere only          │
+                                                └───────────────────────────┘
 ```
 
 ### Components
