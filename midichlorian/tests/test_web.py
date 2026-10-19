@@ -10,7 +10,12 @@ from midichlorian import api
 from midichlorian.store import Store
 from test_api import FakeCoordinator, settings
 
-IDS = ["banner", "hosts", "queue", "history", "detail", "log-panel", "log-output", "log-title"]
+
+
+def ids_used_by_app(client):
+    ids = set(re.findall(r'\$\("([^"]+)"\)', client.get("/app.js").text))
+    assert {"banner", "hosts", "queue", "history", "detail", "log-panel", "log-output"} <= ids
+    return ids
 
 
 @pytest.fixture
@@ -28,8 +33,8 @@ def test_index_is_served_without_auth(client):
     assert resp.headers["content-type"].startswith("text/html")
     html = resp.text
     assert "<title>midichlorian</title>" in html
-    for element_id in IDS:
-        assert f'id="{element_id}"' in html
+    for element_id in ids_used_by_app(client):
+        assert f'id="{element_id}"' in html, element_id
     assert 'src="app.js"' in html or 'src="/app.js"' in html
     assert 'href="style.css"' in html or 'href="/style.css"' in html
 
@@ -58,3 +63,10 @@ def test_server_data_is_never_put_through_innerhtml(client):
     assert "insertAdjacentHTML" not in js
     assert "document.write" not in js
     assert "window.confirm" not in js and "confirm(" not in js and "alert(" not in js
+
+
+def test_polling_cannot_pile_up(client):
+    js = client.get("/app.js").text
+    assert "setInterval" not in js  # a chained setTimeout, so slow polls never overlap
+    assert "AbortSignal.timeout" in js
+    assert "requestAnimationFrame" in js

@@ -7,6 +7,7 @@ const POLL_MS = 5000;
 const PEER_LOG_POLL_MS = 3000;
 const CONFIRM_MS = 4000;
 const NOTICE_MS = 8000;
+const FETCH_TIMEOUT_MS = 8000;
 const LOG_MAX_CHARS = 400000;
 const REPO_COMMIT_URL = "https://github.com/nakomis/home-infra/commit/";
 const TERMINAL = ["succeeded", "failed", "skipped", "cancelled", "interrupted", "already"];
@@ -23,7 +24,10 @@ const $ = (id) => document.getElementById(id);
 const state = {
   localInstance: null,
   hostsOk: true, queueOk: true, historyOk: true,
-  peersDown: [],
+  peersDown: { hosts: [], queue: [], history: [] },
+  seq: { hosts: 0, queue: 0, history: 0, detail: 0 },
+  sig: {},             // last rendered signature per section, to skip identical repaints
+  detailJob: null,     // cached detail of the selected run
   notice: null,
   hosts: [], queue: [], history: [],
   selected: null,      // {instance, id} whose detail is open
@@ -47,6 +51,18 @@ function el(tag, cls, ...children) {
 
 function replace(container, ...nodes) {
   container.replaceChildren(...nodes);
+}
+
+/* Run render only when something visible changed, so focus, selection and scroll survive polling. */
+function changed(section, ...parts) {
+  const sig = JSON.stringify(parts) + "|" + Math.floor(Date.now() / 60000);  // relative times age per minute
+  if (state.sig[section] === sig) return false;
+  state.sig[section] = sig;
+  return true;
+}
+
+function selectedKey() {
+  return state.selected ? runKey(state.selected.instance, state.selected.id) : null;
 }
 
 function badge(text, kind) {
@@ -116,14 +132,16 @@ function tagsText(tags) {
 }
 
 async function api(path, options) {
-  const resp = await fetch(path, options);
+  const resp = await fetch(path, { ...options, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   let body = null;
   try { body = await resp.json(); } catch (_) { /* not JSON */ }
+  const isObject = body !== null && typeof body === "object" && !Array.isArray(body);
   if (!resp.ok) {
-    const err = new Error((body && body.detail) || "HTTP " + resp.status);
+    const err = new Error((isObject && typeof body.detail === "string" && body.detail) || "HTTP " + resp.status);
     err.status = resp.status;
     throw err;
   }
+  if (!isObject) throw new Error("unexpected reply from the API");
   return body;
 }
 
@@ -134,8 +152,9 @@ function renderBanner() {
   if (!state.hostsOk || !state.queueOk || !state.historyOk) {
     parts.push("The midichlorian API is unreachable; what follows may be out of date.");
   }
-  if (state.peersDown.length) {
-    parts.push("Not reachable: " + state.peersDown.join(", ") + " (their hosts and runs are missing).");
+  const down = [...new Set(Object.values(state.peersDown).flat())];
+  if (down.length) {
+    parts.push("Not reachable: " + down.join(", ") + " (their hosts and runs are missing).");
   }
   if (state.notice) parts.push(state.notice);
   const banner = $("banner");
@@ -161,7 +180,7 @@ function gateBadges(host) {
     let busy = false;
     for (const p of printers) {
       if (p.busy) { busy = true; out.push(badge("printer busy — " + p.detail, "warn")); }
-      else if (!p.reachable) out.push(badge(p.detail, ""));
+      else if (!p.reachable) out.push(badge(p.name + " — " + p.detail, ""));
     }
     if (gates.printers_error) out.push(badge("printer state unknown", "warn"));
     else if (!busy && printers.length) out.push(badge("printers idle", "ok"));
@@ -206,6 +225,7 @@ function hostCard(host) {
 }
 
 function renderHosts() {
+  if (!changed("hosts", state.hosts, state.hostsOk)) return;
   if (!state.hosts.length) {
     return replace($("hosts"), el("p", "muted", state.hostsOk ? "No hosts reported." : "No data yet."));
   }
@@ -237,7 +257,7 @@ function cancelButton(job) {
 
 function rerenderCancel() {
   renderQueue();
-  if (state.selected) loadDetail(state.selected, false);
+  if (state.detailJob) renderDetail(state.detailJob);
 }
 
 async function cancelRun(job) {
@@ -281,6 +301,7 @@ function jobRow(job, withCancel) {
 }
 
 function renderQueue() {
+  if (!changed("queue", state.queue, state.queueOk, state.confirming, selectedKey())) return;
   if (!state.queue.length) {
     return replace($("queue"), el("p", "muted", state.queueOk ? "Nothing queued or running." : "No data yet."));
   }
@@ -288,6 +309,7 @@ function renderQueue() {
 }
 
 function renderHistory() {
+  if (!changed("history", state.history, state.historyOk, selectedKey())) return;
   if (!state.history.length) {
     return replace($("history"), el("p", "muted", state.historyOk ? "No runs yet." : "No data yet."));
   }
@@ -311,6 +333,7 @@ function recapNodes(recap) {
 }
 
 function renderDetail(job) {
+  if (!changed("detail", job, state.confirming)) return;
   const d = job.detail || {};
   const body = $("detail-body");
   const pairs = [];
@@ -349,7 +372,7 @@ function renderDetail(job) {
   const actions = el("div", "actions");
   const logBtn = el("button", "btn", job.state === "running" ? "Follow log" : "Show full log");
   logBtn.type = "button";
-  logBtn.addEventListener("click", () => openLog(job));
+  logBtn.addEventListener("click", () => openLog(job, true));
   actions.append(logBtn);
   if (PENDING.includes(job.state)) actions.append(" ", cancelButton(job));
   parts.push(el("div", "detail-h", actions));
@@ -360,32 +383,42 @@ function renderDetail(job) {
 }
 
 async function loadDetail(sel, scroll) {
+  if (!state.localInstance) return;
+  const n = ++state.seq.detail;
   const q = instanceQuery(sel.instance);
+  const current = () => state.selected === sel && n === state.seq.detail;
   try {
     const job = await api("/api/runs/" + sel.id + (q ? "?" + q : ""));
-    if (state.selected !== sel) return;
+    if (!current()) return;
+    state.detailJob = job;
     renderDetail(job);
     if (scroll) $("detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
-    if (job.state === "running" && isLocal(job.instance) && !state.autoOpened.has(runKey(job.instance, job.id))) {
-      state.autoOpened.add(runKey(job.instance, job.id));
-      openLog(job);
+    const key = runKey(job.instance, job.id);
+    if (job.state === "running" && isLocal(job.instance) && !state.autoOpened.has(key)) {
+      state.autoOpened.add(key);
+      openLog(job, false);
     }
   } catch (err) {
-    if (state.selected !== sel) return;
-    $("detail-h").textContent = "Run #" + sel.id;
-    replace($("detail-body"), el("p", "muted", "Could not load this run: " + err.message));
+    if (!current()) return;
+    state.detailJob = null;
+    if (changed("detail", "error", sel, err.message)) {
+      $("detail-h").textContent = "Run #" + sel.id;
+      replace($("detail-body"), el("p", "muted", "Could not load this run: " + err.message));
+    }
     $("detail").hidden = false;
   }
 }
 
 function applyHash() {
   const m = /^#run-(?:(.+)-)?(\d+)$/.exec(location.hash);
+  state.detailJob = null;
+  delete state.sig.detail;
   if (!m) {
     state.selected = null;
     $("detail").hidden = true;
   } else {
     state.selected = { instance: m[1] || null, id: Number(m[2]) };
-    loadDetail(state.selected, true);
+    loadDetail(state.selected, true);  // waits for the instance name if it is not known yet
   }
   renderQueue();
   renderHistory();
@@ -402,28 +435,37 @@ function closeLog() {
   if (log) {
     if (log.source) log.source.close();
     if (log.timer) clearTimeout(log.timer);
+    if (log.frame) cancelAnimationFrame(log.frame);
   }
   state.log = null;
   $("log-panel").hidden = true;
 }
 
 function appendLog(text) {
-  const out = $("log-output");
   const log = state.log;
-  if (!log.node) {
-    log.node = document.createTextNode("");
-    out.replaceChildren(log.node);
-  }
-  log.node.appendData(stripAnsi(text));
-  if (log.node.length > LOG_MAX_CHARS) log.node.deleteData(0, log.node.length - LOG_MAX_CHARS);
-  if (state.stick) out.scrollTop = out.scrollHeight;
+  log.pending = (log.pending || "") + text;
+  if (log.pending.length > LOG_MAX_CHARS) log.pending = log.pending.slice(-LOG_MAX_CHARS);
+  if (log.frame) return;
+  log.frame = requestAnimationFrame(() => {
+    log.frame = null;
+    if (state.log !== log || !log.pending) return;
+    const out = $("log-output");
+    if (!log.node) {
+      log.node = document.createTextNode("");
+      out.replaceChildren(log.node);
+    }
+    log.node.appendData(stripAnsi(log.pending));
+    log.pending = "";
+    if (log.node.length > LOG_MAX_CHARS) log.node.deleteData(0, log.node.length - LOG_MAX_CHARS);
+    if (state.stick) out.scrollTop = out.scrollHeight;
+  });
 }
 
 function logStatus(text) {
   $("log-status").textContent = text;
 }
 
-function openLog(job) {
+function openLog(job, scroll) {
   closeLog();
   const key = runKey(job.instance, job.id);
   const log = { key, source: null, timer: null, node: null, job };
@@ -434,7 +476,7 @@ function openLog(job) {
   $("log-panel").hidden = false;
   if (job.state === "running" && isLocal(job.instance)) followLog(log);
   else pageLog(log, 0);
-  $("log-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  if (scroll) $("log-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 function followLog(log) {
@@ -456,6 +498,7 @@ function followLog(log) {
     log.timer = setTimeout(() => {
       if (state.log !== log) return;
       log.node = null;
+      log.pending = "";
       $("log-output").replaceChildren();
       followLog(log);
     }, PEER_LOG_POLL_MS);
@@ -476,7 +519,10 @@ async function pageLog(log, since) {
     done = TERMINAL.includes(job.state) && next === since && !page.text;
     logStatus(done ? "finished (" + job.state + ")" : "updating every 3 s…");
   } catch (err) {
-    logStatus("log unavailable: " + err.message);
+    if (state.log !== log) return;
+    const permanent = err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429;
+    if (permanent) return logStatus("log not available (" + err.message + ")");
+    logStatus("log unavailable: " + err.message + "; retrying…");
   }
   if (state.log !== log || done) return;
   const more = next !== since;
@@ -484,52 +530,89 @@ async function pageLog(log, since) {
 }
 
 function autoOpenRunning() {
-  if (state.log) return;
+  if (state.log || !state.localInstance) return;
   const running = state.queue.find((j) => j.state === "running" && isLocal(j.instance));
   if (!running) return;
   const key = runKey(running.instance, running.id);
   if (state.autoOpened.has(key)) return;
   state.autoOpened.add(key);
-  openLog(running);
+  openLog(running, false);
 }
 
 /* ---------- polling ---------- */
 
-async function refresh() {
-  const [hosts, queue, runs] = await Promise.allSettled([
-    api("/api/hosts"), api("/api/queue"), api("/api/runs?limit=50"),
-  ]);
-  const down = new Set();
-  const take = (res, flag, apply) => {
-    state[flag] = res.status === "fulfilled";
-    if (!state[flag]) return;
-    apply(res.value);
-    for (const p of res.value.peers_unreachable || []) down.add(p);
-  };
-  take(hosts, "hostsOk", (v) => { state.hosts = v.hosts || []; });
-  take(queue, "queueOk", (v) => { state.queue = v.jobs || []; });
-  take(runs, "historyOk", (v) => { state.history = v.runs || []; });
-  state.peersDown = [...down];
-  renderBanner();
-  renderHosts();
-  renderQueue();
-  renderHistory();
-  autoOpenRunning();
-  if (state.selected) {
-    const sel = state.selected;
-    loadDetail(sel, false);
+/* One refresh at a time: a call while one is in flight asks for another straight after it. */
+let refreshing = null;
+let refreshAgain = false;
+
+function refresh() {
+  if (refreshing) { refreshAgain = true; return refreshing; }
+  refreshing = doRefresh().finally(() => {
+    refreshing = null;
+    if (refreshAgain) { refreshAgain = false; refresh(); }
+  });
+  return refreshing;
+}
+
+async function loadInfo() {
+  try {
+    const info = await api("/api/info");
+    if (typeof info.instance !== "string" || !info.instance) throw new Error("no instance name");
+    state.localInstance = info.instance;
+    $("instance-name").textContent = "· " + info.instance;
+    applyHash();  // run keys and follow-or-page decisions need the instance name
+    return true;
+  } catch (_) {
+    return false;
   }
 }
 
-async function start() {
-  try {
-    const info = await api("/api/info");
-    state.localInstance = info.instance;
-    $("instance-name").textContent = "· " + info.instance;
-  } catch (_) { /* the banner will say so after the first poll */ }
+/* Each endpoint is applied as it arrives; a sequence number drops a reply that a newer request overtook. */
+function load(name, path, apply) {
+  const n = ++state.seq[name];
+  return api(path).then(
+    (v) => {
+      if (n !== state.seq[name]) return;
+      state[name + "Ok"] = true;
+      apply(v);
+      state.peersDown[name] = Array.isArray(v.peers_unreachable) ? v.peers_unreachable : [];
+      renderBanner();
+      render(name);
+    },
+    () => {
+      if (n !== state.seq[name]) return;
+      state[name + "Ok"] = false;
+      renderBanner();
+      render(name);
+    },
+  );
+}
+
+function render(name) {
+  ({ hosts: renderHosts, queue: renderQueue, history: renderHistory })[name]();
+}
+
+async function doRefresh() {
+  if (!state.localInstance && !(await loadInfo())) {
+    state.hostsOk = state.queueOk = state.historyOk = false;
+    return renderBanner();
+  }
+  await Promise.all([
+    load("hosts", "/api/hosts", (v) => { state.hosts = Array.isArray(v.hosts) ? v.hosts : []; }),
+    load("queue", "/api/queue", (v) => { state.queue = Array.isArray(v.jobs) ? v.jobs : []; }),
+    load("history", "/api/runs?limit=50", (v) => { state.history = Array.isArray(v.runs) ? v.runs : []; }),
+  ]);
+  autoOpenRunning();
+  if (state.selected) loadDetail(state.selected, false);
+}
+
+async function poll() {
+  try { await refresh(); } finally { setTimeout(poll, POLL_MS); }
+}
+
+function start() {
   applyHash();
-  await refresh();
-  setInterval(refresh, POLL_MS);
+  poll();
 }
 
 $("detail-close").addEventListener("click", () => {
