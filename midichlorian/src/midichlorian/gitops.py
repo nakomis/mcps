@@ -1,6 +1,7 @@
 """Async git helpers for the runner clone of nakomis/home-infra."""
 
 import asyncio
+import shutil
 from pathlib import Path
 
 
@@ -80,3 +81,24 @@ async def checkout(repo: Path, sha: str) -> None:
     _check_rev(sha)
     await _git(repo, "reset", "--hard", sha)
     await _git(repo, "clean", "-fdx", "-e", ".venv")
+
+
+
+async def add_worktree(repo: Path, path: Path, sha: str) -> None:
+    """Check sha out, detached, in a fresh worktree at path (replacing any stale one).
+
+    Each run gets its own worktree, so concurrent runs never share a checkout and
+    the clone itself is only fetched into, never reset.
+    """
+    _check_rev(sha)
+    await remove_worktree(repo, path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    await _git(repo, "worktree", "add", "--detach", "--force", str(path), sha)
+
+
+async def remove_worktree(repo: Path, path: Path) -> None:
+    """Remove the worktree at path, dirty or not; quiet if it is already gone."""
+    if path.exists():
+        await _run("-C", str(repo), "worktree", "remove", "--force", "--force", str(path))
+        shutil.rmtree(path, ignore_errors=True)
+    await _git(repo, "worktree", "prune")

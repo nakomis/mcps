@@ -123,3 +123,65 @@ async def test_git_failure_raises_with_stderr(tmp_path):
     with pytest.raises(GitError) as exc:
         await gitops.fetch(tmp_path / "not-a-repo")
     assert str(exc.value)
+
+
+async def test_add_worktree_is_detached_at_sha_and_leaves_clone_alone(world, tmp_path):
+    clone = world["clone"]
+    new = commit(world["seed"], "c")
+    git(world["seed"], "push", "origin", "main")
+    await gitops.fetch(clone)
+    before = git(clone, "rev-parse", "HEAD")
+    wt = tmp_path / "data" / "worktrees" / "7"
+    await gitops.add_worktree(clone, wt, new)
+    assert git(wt, "rev-parse", "HEAD") == new
+    assert (wt / "c").exists()
+    assert git(clone, "rev-parse", "HEAD") == before  # the shared clone is untouched
+
+
+async def test_two_worktrees_coexist(world, tmp_path):
+    clone = world["clone"]
+    await gitops.fetch(clone)
+    one, two = tmp_path / "w1", tmp_path / "w2"
+    await gitops.add_worktree(clone, one, world["a"])
+    await gitops.add_worktree(clone, two, world["b"])
+    assert git(one, "rev-parse", "HEAD") == world["a"]
+    assert git(two, "rev-parse", "HEAD") == world["b"]
+
+
+async def test_add_worktree_replaces_a_stale_one(world, tmp_path):
+    clone = world["clone"]
+    await gitops.fetch(clone)
+    wt = tmp_path / "w"
+    await gitops.add_worktree(clone, wt, world["a"])
+    (wt / "junk").write_text("x")
+    await gitops.add_worktree(clone, wt, world["b"])
+    assert git(wt, "rev-parse", "HEAD") == world["b"]
+    assert not (wt / "junk").exists()
+
+
+async def test_remove_worktree_removes_dirty_tree_and_registration(world, tmp_path):
+    clone = world["clone"]
+    wt = tmp_path / "w"
+    await gitops.add_worktree(clone, wt, world["a"])
+    (wt / "untracked").write_text("x")
+    (wt / "a").write_text("modified")
+    await gitops.remove_worktree(clone, wt)
+    assert not wt.exists()
+    assert str(wt) not in git(clone, "worktree", "list")
+    await gitops.remove_worktree(clone, wt)  # already gone: no error
+
+
+async def test_remove_worktree_cleans_up_a_plain_directory(world, tmp_path):
+    clone = world["clone"]
+    wt = tmp_path / "w"
+    await gitops.add_worktree(clone, wt, world["a"])
+    import shutil
+
+    shutil.rmtree(wt)  # deleted behind git's back: registration is now stale
+    await gitops.remove_worktree(clone, wt)
+    assert str(wt) not in git(clone, "worktree", "list")
+
+
+async def test_add_worktree_rejects_option_like_sha(world, tmp_path):
+    with pytest.raises(GitError):
+        await gitops.add_worktree(world["clone"], tmp_path / "w", "--orphan")
