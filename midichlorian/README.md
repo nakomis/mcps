@@ -87,8 +87,13 @@ cd midichlorian && uv run pytest -q
 
 - Deploys come only from commits on `origin/main` of home-infra. The server
   fetches before checking, so a commit newer than its clone is accepted.
-- Nothing runs against a printer-sensitive target (`rey`, `leia`, and `luke` full
-  or `samba` runs) while a 3D print is in progress; the run waits. A printer that
+- Nothing runs against a printer-sensitive target (`rey`, `leia` and `luke`) while
+  a 3D print is in progress; the run waits. Every Luke run holds, full or tagged,
+  because many Luke tags (`volatile-fs`, `print-recordings`, Docker restarts)
+  bounce Samba and stale the print-recording mounts. The only exception is a run
+  whose tags are all in `LUKE_HOLD_FREE_TAGS` (`hosts.py`), which is empty until
+  a tag has been checked not to touch Samba, volatile-fs, print-recordings or
+  Docker. A printer that
   cannot be reached (connection refused or timed out, ssh down, OctoPrint's
   container not running) is treated as idle, with a note. A printer that answers
   but whose state cannot be read (no or wrong OctoPrint key, an HTTP error, junk)

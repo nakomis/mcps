@@ -1,6 +1,6 @@
 import httpx
 
-from midichlorian import gates, remote
+from midichlorian import gates, hosts, remote
 from midichlorian.hosts import HOSTS
 from midichlorian.printers import PrinterState, Probes
 
@@ -41,10 +41,15 @@ async def test_cal_never_probes():
     assert (await gates.check_printers("cal", None, False, p)).ok and p.calls == 0
 
 
-async def test_luke_tags():
+async def test_luke_tags(monkeypatch):
     p = FakeProbes(BUSY)
+    # R26: a tagged Luke run holds too, unless every tag is allowlisted
+    assert not (await gates.check_printers("luke", ["print-recordings"], False, p)).ok
+    assert not (await gates.check_printers("luke", ["claude-chats"], False, p)).ok
+    monkeypatch.setattr(hosts, "LUKE_HOLD_FREE_TAGS", frozenset({"claude-chats"}))
+    calls = p.calls
     assert (await gates.check_printers("luke", ["claude-chats"], False, p)).ok
-    assert p.calls == 0
+    assert p.calls == calls
     assert not (await gates.check_printers("luke", None, False, p)).ok
     assert not (await gates.check_printers("luke", ["samba"], False, p)).ok
 

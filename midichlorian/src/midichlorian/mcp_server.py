@@ -522,7 +522,8 @@ async def deploy(
         on main.
     tags: limit the run to these playbook tags; omit for a full run.
     override_printer: run despite a print in progress on a printer-sensitive host (rey, leia,
-        Luke full or samba runs).
+        and every luke run, tagged or not, unless all its tags are on the server's
+        hold-free allowlist).
         Only set override_printer when Martin has explicitly said to in this session.
     requester: leave empty; filled in from this session's name.
     """
