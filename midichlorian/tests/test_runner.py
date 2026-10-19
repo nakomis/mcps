@@ -58,7 +58,11 @@ echo second
     log = tmp_path / "1.log"
     task = asyncio.create_task(
         runner.AnsibleRunner().run(
-            HOSTS["cal"], None, repo, log, runner.build_env({"PATH": os.environ["PATH"]})
+            HOSTS["cal"],
+            None,
+            repo,
+            log,
+            runner.build_env({"PATH": os.environ["PATH"]}),
         )
     )
     try:
@@ -110,3 +114,48 @@ def test_log_tail(tmp_path):
     tail = runner.log_tail(log, 40)
     assert tail.splitlines()[0] == "line 60" and tail.splitlines()[-1] == "line 99"
     assert runner.log_tail(tmp_path / "missing.log") == ""
+
+
+async def test_cancel_kills_the_whole_process_group(tmp_path):
+    pids = tmp_path / "pids"
+    body = f"""#!/bin/sh
+trap '' TERM
+sh -c 'trap "" TERM; echo $$ >> {pids}; sleep 30' &
+echo $$ >> {pids}
+echo started
+wait
+"""
+    repo = make_repo(tmp_path, "cal", body)
+    log = tmp_path / "1.log"
+    task = asyncio.create_task(
+        runner.AnsibleRunner(kill_grace=0.3).run(
+            HOSTS["cal"],
+            None,
+            repo,
+            log,
+            runner.build_env({"PATH": os.environ["PATH"]}),
+        )
+    )
+    for _ in range(200):
+        if pids.exists() and len(pids.read_text().split()) == 2:
+            break
+        await asyncio.sleep(0.02)
+    task.cancel()
+    try:
+        await asyncio.wait_for(task, 10)
+    except asyncio.CancelledError:
+        pass
+    for pid in map(int, pids.read_text().split()):
+        for _ in range(100):  # give the kernel a moment to reap
+            if not _alive(pid):
+                break
+            await asyncio.sleep(0.02)
+        assert not _alive(pid), pid
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True

@@ -18,3 +18,14 @@ def test_printer_hold():
     assert printer_hold_applies("luke", ["samba"]) is True
     assert printer_hold_applies("cal", None) is False
     assert printer_hold_applies("cere", None) is False
+
+
+def test_controller_docker_hosts():
+    # their playbooks build images on the runner (Luke's volatile-fs artefact,
+    # Rey's images, Cal's and Leia's host-broker), so the runner's Docker must be up
+    assert {h for h, s in HOSTS.items() if s.controller_docker} == {
+        "luke",
+        "leia",
+        "cal",
+        "rey",
+    }

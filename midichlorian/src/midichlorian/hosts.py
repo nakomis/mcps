@@ -14,10 +14,19 @@ class HostSpec:
     docker: bool
     printer_sensitive: Literal["always", "samba", "never"]
     needs_backup_gate: bool
+    # the playbook builds images on the runner, so the runner's Docker must be up
+    controller_docker: bool = False
 
 
 def _host(
-    name, *, ro_root=True, linux=True, docker=True, printer="never", backup=False
+    name,
+    *,
+    ro_root=True,
+    linux=True,
+    docker=True,
+    printer="never",
+    backup=False,
+    controller_docker=False,
 ):
     return HostSpec(
         name=name,
@@ -28,17 +37,18 @@ def _host(
         docker=docker,
         printer_sensitive=printer,
         needs_backup_gate=backup,
+        controller_docker=controller_docker,
     )
 
 
 HOSTS: dict[str, HostSpec] = {
     h.name: h
     for h in (
-        _host("luke", printer="samba", backup=True),
-        _host("leia", printer="always"),
-        _host("cal"),
+        _host("luke", printer="samba", backup=True, controller_docker=True),
+        _host("leia", printer="always", controller_docker=True),
+        _host("cal", controller_docker=True),
         _host("mace"),
-        _host("rey", ro_root=False, printer="always"),
+        _host("rey", ro_root=False, printer="always", controller_docker=True),
         _host("cere", ro_root=False, linux=False, docker=False),
     )
 }

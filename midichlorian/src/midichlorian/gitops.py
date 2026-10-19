@@ -83,7 +83,6 @@ async def checkout(repo: Path, sha: str) -> None:
     await _git(repo, "clean", "-fdx", "-e", ".venv")
 
 
-
 async def add_worktree(repo: Path, path: Path, sha: str) -> None:
     """Check sha out, detached, in a fresh worktree at path (replacing any stale one).
 
@@ -99,6 +98,8 @@ async def add_worktree(repo: Path, path: Path, sha: str) -> None:
 async def remove_worktree(repo: Path, path: Path) -> None:
     """Remove the worktree at path, dirty or not; quiet if it is already gone."""
     if path.exists():
-        await _run("-C", str(repo), "worktree", "remove", "--force", "--force", str(path))
+        await _run(
+            "-C", str(repo), "worktree", "remove", "--force", "--force", str(path)
+        )
         shutil.rmtree(path, ignore_errors=True)
     await _git(repo, "worktree", "prune")

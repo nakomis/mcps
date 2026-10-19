@@ -81,8 +81,14 @@ class FakeRunner:
 
     async def run(self, host, tags, repo, log, env):
         self.calls.append(
-            {"host": host.name, "tags": tags, "repo": repo, "env": env,
-             "sha": self.git.worktrees.get(repo), "exists": repo.is_dir()}
+            {
+                "host": host.name,
+                "tags": tags,
+                "repo": repo,
+                "env": env,
+                "sha": self.git.worktrees.get(repo),
+                "exists": repo.is_dir(),
+            }
         )
         self.active += 1
         self.max_active = max(self.max_active, self.active)
@@ -92,7 +98,7 @@ class FakeRunner:
             if self.raises:
                 raise self.raises
             text, rc = self.results.get(host.name, (CLEAN, 0))
-            with open(log, "a") as f:
+            with open(log, "a") as f:  # noqa: ASYNC230 — a tiny local fixture write
                 f.write(text)
             return rc
         finally:
@@ -126,7 +132,14 @@ class FakeProbes:
 
     async def states(self):
         self.calls += 1
-        return [PrinterState("cthulhu", self.busy, "Cthulhu: Exposure" if self.busy else "Cthulhu: Idle", True)]
+        return [
+            PrinterState(
+                "cthulhu",
+                self.busy,
+                "Cthulhu: Exposure" if self.busy else "Cthulhu: Idle",
+                True,
+            )
+        ]
 
 
 class FakeGates:
@@ -188,8 +201,14 @@ class World:
 
     def coordinator(self, git=None):
         return Coordinator(
-            self.settings, self.store, self.runner, self.probes, self.ssh, self.clock,
-            gates=self.gates, git=git or self.git,
+            self.settings,
+            self.store,
+            self.runner,
+            self.probes,
+            self.ssh,
+            self.clock,
+            gates=self.gates,
+            git=git or self.git,
         )
 
     def job(self, job_id):
@@ -237,8 +256,12 @@ async def test_success_deploys_main_head_and_records_it(w):
     assert job.detail["failing_task"] is None
     assert job.started and job.finished
     assert w.store.deployed("leia")["full"]["sha"] == "c"
-    marker = w.ssh.commands("/var/log/midichlorian/deployed")
-    assert len(marker) == 1 and "c 2026-10-19T12:00:00Z full" in marker[0]
+    assert w.ssh.commands("/var/log/midichlorian/deployed") == [
+        (
+            "sudo -n mkdir -p /var/log/midichlorian && "
+            "echo 'c 2026-10-19T12:00:00Z full' | sudo -n tee /var/log/midichlorian/deployed >/dev/null"
+        )
+    ]
     run = w.runner.calls[0]
     assert run["sha"] == "c" and run["exists"]
     assert run["repo"].parent == w.settings.data_dir / "worktrees"
@@ -248,7 +271,9 @@ async def test_success_deploys_main_head_and_records_it(w):
     log = Path(job.log_path)
     assert log == w.settings.data_dir / "logs" / f"{job.id}.log"
     header = log.read_text().splitlines()[0]
-    assert "leia" in header and "b" in header and "full" in header and "sess-1" in header
+    assert (
+        "leia" in header and "b" in header and "full" in header and "sess-1" in header
+    )
     assert "PLAY RECAP" in log.read_text()
 
 
@@ -270,7 +295,9 @@ async def test_tags_are_passed_and_recorded(w):
 
 
 async def test_marker_failure_is_a_warning_not_a_failure(w):
-    w.ssh.overrides["/var/log/midichlorian"] = RunResult(1, "", "sudo: a password is required")
+    w.ssh.overrides["/var/log/midichlorian"] = RunResult(
+        1, "", "sudo: a password is required"
+    )
     c = w.coordinator()
     res = await c.submit(["cal"], "c", None, False, "s")
     await settle(c)
@@ -293,11 +320,18 @@ async def test_sha_newer_than_local_clone_is_fetched_not_refused(w):
 
 
 def _git(cwd, *args):
-    env = {**os.environ, "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.invalid",
-           "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.invalid",
-           "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
-    return subprocess.run(["git", *args], cwd=cwd, env=env, check=True,
-                          capture_output=True, text=True).stdout.strip()
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "T",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "T",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+    }
+    return subprocess.run(
+        ["git", *args], cwd=cwd, env=env, check=True, capture_output=True, text=True
+    ).stdout.strip()
 
 
 async def test_real_git_newer_sha_is_fetched_and_run_from_a_worktree(w, monkeypatch):
@@ -354,7 +388,9 @@ async def test_not_on_main_is_refused_for_every_host(w):
     res = await c.submit(["leia", "cal"], "x", None, False, "s")
     assert states(res) == ["failed", "failed"]
     assert all(j["reason"] == "not on origin/main" for j in res.jobs)
-    assert all(w.job(j["job_id"]).detail["reason"] == "not on origin/main" for j in res.jobs)
+    assert all(
+        w.job(j["job_id"]).detail["reason"] == "not on origin/main" for j in res.jobs
+    )
     await settle(c)
     assert w.runner.calls == []
 
@@ -412,7 +448,9 @@ async def test_tagged_deploy_covers_only_its_tags(w):
 async def test_already_is_rechecked_when_the_job_reaches_the_front(w):
     c = w.coordinator()
     res = await c.submit(["cal"], "b", None, False, "s")
-    w.store.record_deploy("cal", "c", None, "2026-10-19T00:00:00Z")  # e.g. by another job
+    w.store.record_deploy(
+        "cal", "c", None, "2026-10-19T00:00:00Z"
+    )  # e.g. by another job
     await settle(c)
     assert w.job(res.jobs[0]["job_id"]).state == "already"
     assert w.runner.calls == []
@@ -461,6 +499,47 @@ async def test_no_recap_is_a_failure(w):
     assert w.job(res.jobs[0]["job_id"]).state == "failed"
 
 
+async def test_worktree_cleanup_failure_is_only_a_warning(w):
+    async def broken_remove(repo, path):
+        raise GitError("fatal: worktree locked")
+
+    w.git.remove_worktree = broken_remove
+    c = w.coordinator()
+    res = await c.submit(["cal"], "c", None, False, "s")
+    await settle(c)
+    job = w.job(res.jobs[0]["job_id"])
+    assert job.state == "succeeded"
+    assert any("worktree locked" in x for x in job.detail["warnings"])
+
+
+async def test_internal_error_after_the_run_keeps_the_log_tail(w, monkeypatch):
+    from midichlorian import worker
+
+    def broken_parse(text):
+        raise RuntimeError("parser exploded")
+
+    monkeypatch.setattr(worker.recap, "parse", broken_parse)
+    c = w.coordinator()
+    res = await c.submit(["cal"], "c", None, False, "s")
+    await settle(c)
+    job = w.job(res.jobs[0]["job_id"])
+    assert job.state == "failed" and "internal error" in job.detail["reason"]
+    assert "PLAY RECAP" in job.detail["log_tail"]
+
+
+async def test_finished_jobs_leave_no_recheck_entries(w):
+    w.probes.busy = True
+    c = w.coordinator()
+    job_id = (await c.submit(["leia"], "c", None, False, "s")).jobs[0]["job_id"]
+    await settle(c)
+    assert job_id in c._recheck_at
+    w.gates.aws = GateResult(False, False, "ExpiredToken")  # fails at the next re-check
+    w.clock.advance(61)
+    await settle(c)
+    assert w.job(job_id).state == "failed"
+    assert c._recheck_at == {}
+
+
 async def test_runner_crash_fails_the_job_and_cleans_up(w):
     w.runner.raises = RuntimeError("boom")
     c = w.coordinator()
@@ -482,7 +561,10 @@ async def test_printer_busy_waits_then_runs_when_idle(w):
     await settle(c)
     job = w.job(res.jobs[0]["job_id"])
     assert job.state == "waiting"
-    assert "printer busy" in job.detail["gate"] and "Cthulhu: Exposure" in job.detail["gate"]
+    assert (
+        "printer busy" in job.detail["gate"]
+        and "Cthulhu: Exposure" in job.detail["gate"]
+    )
     assert w.probes.calls == 1
     w.clock.advance(30)
     await settle(c)
@@ -513,7 +595,9 @@ async def test_waiting_job_holds_its_host(w):
     w.probes.busy = True
     c = w.coordinator()
     first = await c.submit(["leia"], "c", None, False, "s1")
-    second = await c.submit(["leia", "cal"], "c", None, True, "s2")  # not merged: multi-host
+    second = await c.submit(
+        ["leia", "cal"], "c", None, True, "s2"
+    )  # not merged: multi-host
     await settle(c)
     assert w.job(first.jobs[0]["job_id"]).state == "waiting"
     assert w.job(second.jobs[0]["job_id"]).state == "queued"
@@ -542,15 +626,72 @@ async def test_luke_backups_run_last_and_failure_leaves_luke_untouched(w):
     assert w.runner.calls == [] and w.git.worktrees == {}
 
 
-async def test_docker_gate_only_for_luke_and_rey(w):
+async def test_docker_gate_only_for_controller_side_builds(w):
     w.gates.docker = GateResult(False, False, "Cannot connect to the Docker daemon")
     c = w.coordinator()
-    rey = await c.submit(["rey"], "c", None, False, "s")
-    cal = await c.submit(["cal"], "c", None, False, "s")
+    res = {
+        h: await c.submit([h], "c", None, False, "s")
+        for h in ("rey", "cal", "leia", "mace")
+    }
     await settle(c)
-    assert w.job(rey.jobs[0]["job_id"]).state == "failed"
-    assert "Docker" in w.job(rey.jobs[0]["job_id"]).detail["reason"]
-    assert w.job(cal.jobs[0]["job_id"]).state == "succeeded"
+    for h in ("rey", "cal", "leia"):
+        job = w.job(res[h].jobs[0]["job_id"])
+        assert job.state == "failed" and "Docker gate" in job.detail["reason"], h
+    assert w.job(res["mace"].jobs[0]["job_id"]).state == "succeeded"
+    assert w.gates.calls.count("docker") == 3
+
+
+async def test_cancel_during_gates_never_starts_luke_backups(w):
+    release = asyncio.Event()
+
+    async def slow_docker(env):
+        w.gates.calls.append("docker")
+        await release.wait()
+        return OK
+
+    w.gates.check_docker = slow_docker
+    c = w.coordinator()
+    job_id = (await c.submit(["luke"], "c", ["x"], False, "s")).jobs[0]["job_id"]
+    await c.tick()
+    await until(lambda: "docker" in w.gates.calls)
+    assert c.cancel(job_id)
+    release.set()
+    await settle(c)
+    assert "backups" not in w.gates.calls
+    assert w.job(job_id).state == "cancelled"
+
+
+async def test_printer_rechecked_after_luke_backups(w):
+    async def backups_while_a_print_starts(ssh):
+        w.gates.calls.append("backups")
+        w.probes.busy = True  # a print started during the (long) backups
+        return OK
+
+    w.gates.run_luke_backups = backups_while_a_print_starts
+    c = w.coordinator()
+    job_id = (await c.submit(["luke"], "c", None, False, "s")).jobs[0]["job_id"]
+    await settle(c)
+    job = w.job(job_id)
+    assert job.state == "waiting" and "printer busy" in job.detail["gate"]
+    assert w.runner.calls == []
+    w.probes.busy = False
+    w.gates.run_luke_backups = FakeGates.run_luke_backups.__get__(w.gates)
+    w.clock.advance(61)
+    await settle(c)
+    assert w.job(job_id).state == "succeeded"
+    assert w.gates.calls.count("backups") == 2  # backups re-run before the real run
+
+
+async def test_gate_passes_are_logged(w):
+    c = w.coordinator()
+    job_id = (await c.submit(["luke"], "c", None, False, "s")).jobs[0]["job_id"]
+    await settle(c)
+    log = Path(w.job(job_id).log_path).read_text()
+    for line in ("AWS ok", "printers idle", "Docker ok", "Luke's backups ok"):
+        assert f"[midichlorian] {line}" in log, line
+    over = (await c.submit(["rey"], "c", None, True, "s")).jobs[0]["job_id"]
+    await settle(c)
+    assert "printer hold overridden by Martin" in Path(w.job(over).log_path).read_text()
 
 
 # --- Review Focus 2: a second request while running ------------------------------------
@@ -603,7 +744,9 @@ async def test_request_during_gate_checks_neither_merges_nor_starts(w):
     assert w.job(first.jobs[0]["job_id"]).state == "queued"
 
     second = await c.submit(["luke"], "c", None, False, "s2")
-    assert second.jobs[0]["job_id"] != first.jobs[0]["job_id"]  # no merge: its gates saw ["x"]
+    assert (
+        second.jobs[0]["job_id"] != first.jobs[0]["job_id"]
+    )  # no merge: its gates saw ["x"]
     assert w.job(first.jobs[0]["job_id"]).tags == ["x"]
     await c.tick()
     for _ in range(20):
@@ -641,6 +784,18 @@ async def test_queued_request_merges_into_queued_job(w):
     assert older.jobs[0]["job_id"] == job_id and job.sha == "c" and job.tags is None
     await settle(c)
     assert len(w.runner.calls) == 1
+
+
+async def test_override_and_non_override_requests_never_merge(w):
+    c = w.coordinator()
+    over = await c.submit(["luke"], "c", ["samba"], True, "s1")
+    plain = await c.submit(["luke"], "c", None, False, "s2")
+    assert plain.jobs[0]["job_id"] != over.jobs[0]["job_id"]
+    assert not plain.jobs[0]["merged"]
+    assert w.job(over.jobs[0]["job_id"]).tags == ["samba"]
+    assert w.job(plain.jobs[0]["job_id"]).override_printer is False
+    again = await c.submit(["luke"], "c", ["y"], True, "s3")  # same override: merges
+    assert again.jobs[0]["job_id"] == over.jobs[0]["job_id"]
 
 
 async def test_multi_host_request_does_not_merge_its_first_host(w):
