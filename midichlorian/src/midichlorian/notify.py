@@ -27,12 +27,13 @@ def deliver(text: str, socket_path: str | None = None, token: str | None = None)
         logger.warning("no messaging socket or token in the environment; message not delivered")
         return False
     try:
+        # ensure_ascii stays on: U+2028/2029/0085 etc. must be escaped, never raw, so the
+        # two-line protocol cannot be split by a line-separator in the content.
         payload = (
             json.dumps({"type": "auth", "token": token}, separators=(",", ":")) + "\n"
             + json.dumps(
                 {"type": "user", "message": {"role": "user", "content": text}},
                 separators=(",", ":"),
-                ensure_ascii=False,
             ) + "\n"
         ).encode("utf-8")
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:

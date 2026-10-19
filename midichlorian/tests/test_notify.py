@@ -94,3 +94,14 @@ def test_connect_failure_returns_false_and_never_logs_the_token(caplog):
 def test_never_raises_on_odd_failures(tmp_path):
     assert notify.deliver("x", str(tmp_path), TOKEN) is False  # a directory, not a socket
     assert notify.deliver("x", "/tmp/" + "a" * 300, TOKEN) is False  # path too long
+
+
+def test_line_separators_are_escaped_so_the_protocol_cannot_split(sock):
+    text = "a\u2028b\u2029c\x85d\x0be\x0cf\x1cg"
+    assert notify.deliver(text, sock.path, TOKEN) is True
+    sock.join(2)
+    raw = sock.received[0]
+    assert raw.isascii()
+    assert len(raw.decode().splitlines()) == 2  # str.splitlines splits on all of those
+    assert len(raw.split(b"\n")) == 3
+    assert json.loads(raw.split(b"\n")[1])["message"]["content"] == text
