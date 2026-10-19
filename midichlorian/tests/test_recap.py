@@ -55,3 +55,35 @@ def test_several_host_lines_are_summed():
     )
     r = parse(text)
     assert (r.ok, r.changed, r.unreachable, r.failed, r.skipped) == (3, 1, 1, 1, 1)
+
+
+RECAP_CLEAN = (
+    "PLAY RECAP ****\n"
+    "h : ok=3  changed=0  unreachable=0  failed=0  skipped=0  rescued=0  ignored=1\n"
+)
+RECAP_FAILED = RECAP_CLEAN.replace("failed=0", "failed=1")
+IGNORED = 'TASK [x]\nfatal: [h]: FAILED! => {"msg": "no"}\n...ignoring\n'
+
+
+def test_ignored_fatal_is_not_a_failure():
+    r = parse(IGNORED + RECAP_CLEAN)
+    assert r.failed == 0
+    assert r.failing_task is None
+
+
+def test_ignored_fatal_then_real_failure_names_the_later_task():
+    text = IGNORED + "\nTASK [y]\nfatal: [h]: FAILED! => {}\n\n" + RECAP_FAILED
+    assert parse(text).failing_task == "y"
+
+
+def test_handler_failure_names_the_handler():
+    text = (
+        "TASK [a] ***\nok: [h]\n\n"
+        "RUNNING HANDLER [Restart foo] ***\nfatal: [h]: FAILED! => {}\n\n" + RECAP_FAILED
+    )
+    assert parse(text).failing_task == "Restart foo"
+
+
+def test_no_failing_task_when_recap_shows_no_failures():
+    text = "TASK [a]\nfatal: [h]: FAILED! => {}\n" + RECAP_CLEAN
+    assert parse(text).failing_task is None

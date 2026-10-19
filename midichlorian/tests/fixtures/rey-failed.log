@@ -1,22 +1,16 @@
-ok: [rey]
+ok: [host-c]
 
 TASK [Add Leia's plex share to fstab (read-only, automounted)] *****************
 [WARNING]: Deprecation warnings can be disabled by setting `deprecation_warnings=False` in ansible.cfg.
 [DEPRECATION WARNING]: Passing `warnings` to `exit_json` or `fail_json` is deprecated. This feature will be removed from ansible-core version 2.23. Use `AnsibleModule.warn` instead.
-ok: [rey]
+ok: [host-c]
 
 TASK [Create the plex mount point] *********************************************
 [ERROR]: Task failed: Module failed: [Errno 30] Read-only file system: b'/mnt/plex'
-Origin: home-infra/rey/ansible/playbook.yml:1521:11
 
-1519             state: present
-1520
-1521         - name: Create the plex mount point
-               ^ column 11
-
-fatal: [rey]: FAILED! => {"changed": false, "msg": "Task failed: Module failed: [Errno 30] Read-only file system: b'/mnt/plex'"}
+fatal: [host-c]: FAILED! => {"changed": false, "msg": "Task failed: Module failed: [Errno 30] Read-only file system: b'/mnt/plex'"}
 
 PLAY RECAP *********************************************************************
-rey                        : ok=100  changed=20   unreachable=0    failed=1    skipped=14   rescued=0    ignored=0   
+host-c                       : ok=100  changed=20   unreachable=0    failed=1    skipped=14   rescued=0    ignored=0   
 
 EXIT 2

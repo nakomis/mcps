@@ -177,3 +177,42 @@ async def test_cifs_other_failure_and_failed_umount():
     })
     checks = by_name(await verify.run_checks(LUKE, {"containers": {}, "samba_started": "x"}, ssh))
     assert not checks["cifs leia"].ok and "busy" in checks["cifs leia"].detail
+
+
+async def test_snapshot_error_means_no_baseline_check_fails():
+    ssh = healthy()
+    checks = by_name(
+        await verify.run_checks(LEIA, {"containers": {}, "error": "boom"}, ssh)
+    )
+    assert not checks["containers"].ok
+    assert checks["containers"].detail == "no baseline: boom"
+
+
+async def test_unreadable_baseline_samba_is_not_a_restart():
+    ssh = healthy()
+    checks = by_name(
+        await verify.run_checks(LUKE, {"containers": {}, "samba_started": None}, ssh)
+    )
+    assert "baseline" in checks["samba"].detail
+    assert not any(n.startswith("cifs") for n in checks)
+    assert not any("ls /mnt/print-recordings" in c for _, c in ssh.calls)
+
+
+async def test_unreadable_current_samba_fails():
+    ssh = healthy(StartedAt=RunResult(1, "", "no such container"))
+    checks = by_name(
+        await verify.run_checks(LUKE, {"containers": {}, "samba_started": "x"}, ssh)
+    )
+    assert not checks["samba"].ok
+
+
+async def test_inspect_quotes_names_and_run_checks_makes_one_ps_one_inspect():
+    ssh = healthy(**{
+        "docker ps -a": ok("we ird|running\nweb|running\n"),
+        "docker inspect --format": ok("/we ird|0\n/web|0\n"),
+    })
+    await verify.run_checks(LEIA, {"containers": {}}, ssh)
+    assert sum("docker ps" in c for _, c in ssh.calls) == 1
+    inspects = [c for _, c in ssh.calls if "docker inspect --format" in c]
+    assert len(inspects) == 1
+    assert "'we ird'" in inspects[0]

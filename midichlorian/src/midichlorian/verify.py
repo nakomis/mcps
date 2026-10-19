@@ -1,5 +1,6 @@
 """Before/after checks around a playbook run. Never raises: failures become Checks."""
 
+import shlex
 from dataclasses import dataclass
 
 from midichlorian.hosts import HOSTS, HostSpec
@@ -31,7 +32,7 @@ async def _containers(host: HostSpec, ssh) -> tuple[dict | None, str]:
     )
     if not states:
         return {}, ""
-    names = " ".join(states)
+    names = " ".join(shlex.quote(n) for n in states)
     insp = await ssh(
         host, "docker inspect --format '{{.Name}}|{{.RestartCount}}' " + names
     )
@@ -84,6 +85,8 @@ async def _check_units(host, ssh) -> Check:
 
 
 async def _check_containers(host, before, ssh) -> Check:
+    if "error" in before:
+        return Check("containers", False, f"no baseline: {before['error']}")
     now, error = await _containers(host, ssh)
     if now is None:
         return Check("containers", False, error)
@@ -135,11 +138,16 @@ async def run_checks(
         if started is None:
             checks.append(Check("samba", False, "could not read samba StartedAt"))
         else:
-            restarted = started != old
-            checks.append(
-                Check("samba", True, "restarted" if restarted else "not restarted")
-            )
-            if restarted:
+            if old is None:
+                checks.append(
+                    Check("samba", True, "baseline StartedAt unreadable; restart not assessed")
+                )
+            else:
+                restarted = started != old
+                checks.append(
+                    Check("samba", True, "restarted" if restarted else "not restarted")
+                )
+            if old is not None and started != old:
                 for name in CIFS_HOSTS:
                     checks.append(await _check_cifs(name, ssh, rey_printing))
     return checks

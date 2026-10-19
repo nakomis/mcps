@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-_TASK = re.compile(r"^TASK \[(.*)\]\s*(\*+\s*)?$")
+_TASK = re.compile(r"^(?:TASK|RUNNING HANDLER) \[(.*)\]\s*(\*+\s*)?$")
 _FATAL = re.compile(r"^(fatal:|.*UNREACHABLE!)")
 _COUNT = re.compile(r"\b(ok|changed|unreachable|failed|skipped)=(\d+)")
 _FIELDS = ("ok", "changed", "unreachable", "failed", "skipped")
@@ -22,7 +22,8 @@ class Recap:
 
 def parse(log_text: str) -> Recap:
     lines = _ANSI.sub("", log_text).splitlines()
-    task = failing = None
+    task = None
+    fatals: list[list] = []  # [task, ignored]
     in_recap = False
     totals: dict[str, int] | None = None
     for line in lines:
@@ -39,7 +40,12 @@ def parse(log_text: str) -> Recap:
         m = _TASK.match(line)
         if m:
             task = m.group(1)
-        elif failing is None and _FATAL.match(line):
-            failing = task
+        elif _FATAL.match(line):
+            fatals.append([task, False])
+        elif line.strip() == "...ignoring" and fatals:
+            fatals[-1][1] = True
+    failing = next((t for t, ignored in fatals if not ignored), None)
+    if totals and not (totals["failed"] or totals["unreachable"]):
+        failing = None
     counts = totals or dict.fromkeys(_FIELDS)
     return Recap(**counts, failing_task=failing)
