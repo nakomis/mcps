@@ -70,3 +70,9 @@ def test_polling_cannot_pile_up(client):
     assert "setInterval" not in js  # a chained setTimeout, so slow polls never overlap
     assert "AbortSignal.timeout" in js
     assert "requestAnimationFrame" in js
+
+
+def test_printer_badges_only_where_the_hold_applies(client):
+    # printer_sensitive is the string "never" on cal, mace and cere, which is truthy
+    js = client.get("/app.js").text
+    assert 'gates.printer_sensitive && gates.printer_sensitive !== "never"' in js

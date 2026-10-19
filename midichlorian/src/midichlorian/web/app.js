@@ -175,7 +175,7 @@ function notify(message) {
 function gateBadges(host) {
   const gates = host.gates || {};
   const out = [];
-  if (gates.printer_sensitive) {
+  if (gates.printer_sensitive && gates.printer_sensitive !== "never") {
     const printers = gates.printers || [];
     let busy = false;
     for (const p of printers) {
