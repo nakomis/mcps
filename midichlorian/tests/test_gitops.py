@@ -185,3 +185,38 @@ async def test_remove_worktree_cleans_up_a_plain_directory(world, tmp_path):
 async def test_add_worktree_rejects_option_like_sha(world, tmp_path):
     with pytest.raises(GitError):
         await gitops.add_worktree(world["clone"], tmp_path / "w", "--orphan")
+
+
+def shim_git(tmp_path: Path, monkeypatch, body: str) -> Path:
+    """Put a fake `git` first on PATH."""
+    bin_dir = tmp_path / "shim"
+    bin_dir.mkdir()
+    pids = tmp_path / "git.pid"
+    script = bin_dir / "git"
+    script.write_text(f"#!/bin/sh\necho $$ > {pids}\n{body}\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    return pids
+
+
+async def test_hung_git_times_out_and_is_killed(tmp_path, monkeypatch):
+    pids = shim_git(tmp_path, monkeypatch, "exec sleep 30")
+    monkeypatch.setattr(gitops, "GIT_TIMEOUT", 0.5)
+    with pytest.raises(GitError, match="timeout"):
+        await gitops.fetch(tmp_path)
+    pid = int(pids.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
+async def test_git_env_never_prompts_and_speaks_english(tmp_path, monkeypatch):
+    shim_git(tmp_path, monkeypatch, 'echo "prompt=$GIT_TERMINAL_PROMPT lc=$LC_ALL"')
+    rc, out, _ = await gitops._run("status")
+    assert (rc, out) == (0, "prompt=0 lc=C")
+
+
+async def test_git_output_that_is_not_utf8_is_replaced(tmp_path, monkeypatch):
+    shim_git(tmp_path, monkeypatch, r"printf 'caf\351' >&2; exit 1")
+    with pytest.raises(GitError) as exc:
+        await gitops.fetch(tmp_path)
+    assert str(exc.value) == "caf�"

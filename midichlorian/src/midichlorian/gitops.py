@@ -1,8 +1,18 @@
 """Async git helpers for the runner clone of nakomis/home-infra."""
 
 import asyncio
+import contextlib
+import os
 import shutil
+import signal
 from pathlib import Path
+
+# A stalled fetch or clone must not hold the clone's lock (and so every submit and
+# job) for ever: git has no default low-speed limit.
+GIT_TIMEOUT = 120.0
+# Never prompt for credentials (there is nobody to answer), and keep stderr in
+# English, since callers match on it.
+_GIT_ENV = {"GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
 
 
 class GitError(Exception):
@@ -16,9 +26,22 @@ async def _run(*args: str) -> tuple[int, str, str]:
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env={**os.environ, **_GIT_ENV},
+        start_new_session=True,  # so a timeout can kill git's helpers too
     )
-    out, err = await proc.communicate()
-    return proc.returncode, out.decode().strip(), err.decode().strip()
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), GIT_TIMEOUT)
+    except TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        await proc.wait()
+        name = args[2] if args[:1] == ("-C",) and len(args) > 2 else args[0]
+        raise GitError(f"git {name}: timeout after {GIT_TIMEOUT:g} s") from None
+    return (
+        proc.returncode,
+        out.decode(errors="replace").strip(),
+        err.decode(errors="replace").strip(),
+    )
 
 
 async def _git(repo: Path, *args: str) -> str:
