@@ -190,6 +190,32 @@ def test_healthz_and_static_need_no_auth(solo):
     assert bare.get("/favicon.ico").status_code == 404  # absent file, not 401
 
 
+def test_api_docs_are_not_served(solo):
+    tc, _, _ = solo
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert tc.get(path).status_code == 404, path
+
+
+def test_healthz_is_503_once_the_scheduler_has_died(tmp_path, store, web, caplog):
+    s = settings(tmp_path)
+    coord = FakeCoordinator(s, store)
+
+    async def dies():
+        raise RuntimeError("scheduler bug")
+
+    coord.run_forever = dies
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+    with TestClient(api.create_app(s, coord, client, web_dir=web)) as tc:
+        for _ in range(100):
+            resp = tc.get("/healthz")
+            if resp.status_code == 503:
+                break
+            time.sleep(0.01)
+        assert resp.status_code == 503
+        assert resp.json()["ok"] is False
+    assert "scheduler bug" in caplog.text
+
+
 def test_info(solo):
     tc, _, _ = solo
     body = tc.get("/api/info").json()
@@ -287,6 +313,18 @@ def test_hosts_peer_rejecting_our_token_counts_as_unreachable(env):
     peer.reject = True
     body = tc.get("/api/hosts").json()
     assert body["peers_unreachable"] == ["mace"]
+
+
+def test_peer_list_with_non_dict_items_counts_as_unreachable(env):
+    tc, _, peer, _ = env
+    peer.hosts = ["junk"]
+    peer.runs = [{"id": 5, "created": "2026-10-19T09:00:00Z"}, 7]
+    body = tc.get("/api/hosts").json()
+    assert body["peers_unreachable"] == ["mace"]
+    assert "junk" not in body["hosts"]
+    resp = tc.get("/api/runs")
+    assert resp.status_code == 200
+    assert resp.json()["peers_unreachable"] == ["mace"]
 
 
 def test_local_param_suppresses_peer_fan_out(env):

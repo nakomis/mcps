@@ -130,7 +130,8 @@ class _Peers:
         )
         items, down = [], []
         for name, body in zip(names, bodies, strict=True):
-            if isinstance(body, dict) and isinstance(body.get(key), list):
+            items_ok = isinstance(body, dict) and isinstance(body.get(key), list)
+            if items_ok and all(isinstance(i, dict) for i in body[key]):
                 items.extend(body[key])
             else:
                 down.append(name)
@@ -190,14 +191,28 @@ def create_app(
         # Shutdown stops scheduling only. Running playbooks are never signalled: they
         # finish in their own sessions and a restart records them `interrupted` (R27).
         task = asyncio.create_task(coordinator.run_forever())
+        task.add_done_callback(scheduler_ended)
         try:
             yield
         finally:
             task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError, Exception):  # logged already
                 await task
 
-    app = FastAPI(title="midichlorian", lifespan=lifespan)
+    def scheduler_ended(task: asyncio.Task) -> None:
+        """run_forever never returns: if it ends, scheduling has stopped. Say so, and
+        fail /healthz so the supervisor restarts us."""
+        if task.cancelled():
+            return
+        health["scheduler"] = False
+        exc = task.exception()
+        logger.error("the scheduler stopped: %r", exc, exc_info=exc)
+
+    health = {"scheduler": True}
+    # No /docs, /redoc or /openapi.json: they would be served without auth.
+    app = FastAPI(
+        title="midichlorian", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
+    )
 
     def authorised(request: Request) -> None:
         supplied = [request.headers.get("x-midichlorian-token", "")]
@@ -238,6 +253,8 @@ def create_app(
 
     @app.get("/healthz")
     async def healthz():
+        if not health["scheduler"]:
+            return JSONResponse({"ok": False, "error": "scheduler stopped"}, status_code=503)
         return {"ok": True}
 
     @api.get("/info")
