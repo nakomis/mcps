@@ -187,6 +187,8 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Shutdown stops scheduling only. Running playbooks are never signalled: they
+        # finish in their own sessions and a restart records them `interrupted` (R27).
         task = asyncio.create_task(coordinator.run_forever())
         try:
             yield
@@ -460,6 +462,27 @@ async def resolve_octoprint_key(env=os.environ, run=remote.run) -> str | None:
     return key
 
 
+def peer_running_check(settings: Settings, client: httpx.AsyncClient):
+    """The Coordinator's `peer_running`: does the peer instance `name` have a running
+    job? None when it cannot be asked (down, rejecting us, junk): the caller proceeds."""
+    headers = {"Authorization": f"Bearer {settings.token}"}
+
+    async def check(name: str) -> bool | None:
+        url = settings.peers[name].rstrip("/") + "/api/queue"
+        try:
+            resp = await client.get(url, params={"local": "1"}, headers=headers, timeout=PEER_TIMEOUT)
+            resp.raise_for_status()
+            jobs = resp.json().get("jobs")
+        except (httpx.HTTPError, ValueError, AttributeError) as exc:
+            logger.warning("peer %s: queue check failed (%s)", name, type(exc).__name__)
+            return None
+        if not isinstance(jobs, list):
+            return None
+        return any(isinstance(j, dict) and j.get("state") == "running" for j in jobs)
+
+    return check
+
+
 def build_app(settings: Settings, octoprint_key=resolve_octoprint_key) -> FastAPI:
     """`octoprint_key` is the async key resolver; Probes calls it lazily, and again while
     the key is missing."""
@@ -467,7 +490,13 @@ def build_app(settings: Settings, octoprint_key=resolve_octoprint_key) -> FastAP
     store = Store(settings.data_dir / "midichlorian.db")
     probes = Probes(httpx.AsyncClient(), HOSTS["leia"], remote.ssh, octoprint_key)
     coordinator = Coordinator(
-        settings, store, AnsibleRunner(), probes, remote.ssh, lambda: datetime.now(UTC)
+        settings,
+        store,
+        AnsibleRunner(),
+        probes,
+        remote.ssh,
+        lambda: datetime.now(UTC),
+        peer_running=peer_running_check(settings, httpx.AsyncClient()),
     )
     return create_app(settings, coordinator, httpx.AsyncClient())
 

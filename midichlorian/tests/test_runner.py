@@ -116,41 +116,65 @@ def test_log_tail(tmp_path):
     assert runner.log_tail(tmp_path / "missing.log") == ""
 
 
-async def test_cancel_kills_the_whole_process_group(tmp_path):
-    pids = tmp_path / "pids"
+async def test_cancel_leaves_the_playbook_running_and_logging(tmp_path):
+    """R27: cancelling the run (server shutdown) never signals the playbook; it
+    finishes in its own session and keeps writing to the log."""
+    go, pids = tmp_path / "go", tmp_path / "pids"
     body = f"""#!/bin/sh
-trap '' TERM
-sh -c 'trap "" TERM; echo $$ >> {pids}; sleep 30' &
 echo $$ >> {pids}
 echo started
-wait
+while [ ! -f {go} ]; do sleep 0.05; done
+echo finished
 """
     repo = make_repo(tmp_path, "cal", body)
     log = tmp_path / "1.log"
     task = asyncio.create_task(
-        runner.AnsibleRunner(kill_grace=0.3).run(
-            HOSTS["cal"],
-            None,
-            repo,
-            log,
-            runner.build_env({"PATH": os.environ["PATH"]}),
+        runner.AnsibleRunner().run(
+            HOSTS["cal"], None, repo, log, runner.build_env({"PATH": os.environ["PATH"]})
         )
     )
     for _ in range(200):
-        if pids.exists() and len(pids.read_text().split()) == 2:
+        if log.exists() and "started" in log.read_text():
             break
         await asyncio.sleep(0.02)
+    pid = int(pids.read_text())
+    assert pid_file(repo).read_text().strip() == str(pid)
     task.cancel()
     try:
         await asyncio.wait_for(task, 10)
     except asyncio.CancelledError:
         pass
-    for pid in map(int, pids.read_text().split()):
-        for _ in range(100):  # give the kernel a moment to reap
-            if not _alive(pid):
-                break
-            await asyncio.sleep(0.02)
-        assert not _alive(pid), pid
+    await asyncio.sleep(0.2)
+    assert _alive(pid)  # not signalled
+    go.write_text("")
+    for _ in range(200):
+        if "finished" in log.read_text():
+            break
+        await asyncio.sleep(0.02)
+    assert log.read_text() == "started\nfinished\n"  # no broken pipe: it writes the log itself
+    os.waitpid(pid, 0)  # reap it, as the pidfile check on the next start would find it gone
+
+
+def pid_file(repo: Path) -> Path:
+    return repo.parent / f"{repo.name}.pid"
+
+
+async def test_pid_file_written_while_running_and_removed_after(tmp_path):
+    repo = make_repo(tmp_path, "cal", SCRIPT)
+    log = tmp_path / "1.log"
+    await runner.AnsibleRunner().run(
+        HOSTS["cal"], None, repo, log, runner.build_env({"PATH": os.environ["PATH"]})
+    )
+    assert not pid_file(repo).exists()
+
+
+async def test_output_without_a_final_newline_is_completed(tmp_path):
+    repo = make_repo(tmp_path, "cal", "#!/bin/sh\nprintf 'no newline'\n")
+    log = tmp_path / "1.log"
+    rc = await runner.AnsibleRunner().run(
+        HOSTS["cal"], None, repo, log, runner.build_env({"PATH": os.environ["PATH"]})
+    )
+    assert rc == 0 and log.read_text() == "no newline\n"
 
 
 def _alive(pid: int) -> bool:

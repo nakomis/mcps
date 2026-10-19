@@ -6,6 +6,10 @@ one job per host. Every run gets its own git worktree (at origin/main's head)
 under `<data_dir>/worktrees/<job_id>`, so a fetch or another host's run never
 changes the files under a running playbook. Operations on the shared clone
 (fetch, worktree add/remove) are serialised by one lock.
+
+Shutdown (R27): cancelling a job task never stops its playbook, which finishes in
+its own session; its worktree is left in place, and a restart marks the job
+`interrupted` and keeps the worktree until the playbook's process has gone.
 """
 
 import asyncio
@@ -22,7 +26,7 @@ from midichlorian import gitops as gitops_module
 from midichlorian import recap, verify
 from midichlorian.gitops import GitError
 from midichlorian.hosts import HOSTS, printer_hold_applies
-from midichlorian.runner import append_log, build_env, log_tail
+from midichlorian.runner import append_log, build_env, log_tail, pid_alive, pid_file
 from midichlorian.scheduler import covers, merge_target, next_runnable
 
 logger = logging.getLogger(__name__)
@@ -60,7 +64,12 @@ class Coordinator:
         *,
         gates=gates_module,
         git=gitops_module,
+        peer_running=None,
     ):
+        # peer_running(name) -> True (the peer instance has a running job), False, or
+        # None (unreachable). Holds a deploy of a peer's own host while the peer is
+        # mid-run, since that deploy restarts the peer (R27). None: no such gate.
+        self.peer_running = peer_running
         self.settings = settings
         self.store = store
         self.runner = runner
@@ -83,7 +92,10 @@ class Coordinator:
             job = store.get_job(job_id)
             detail = {
                 **job.detail,
-                "reason": "interrupted by a server restart; check the host",
+                "reason": (
+                    "interrupted by a server restart; the playbook may still be "
+                    "running and writing to this log: check the host"
+                ),
             }
             store.set_state(job_id, "interrupted", detail=detail)
 
@@ -155,7 +167,16 @@ class Coordinator:
             await self.git.ensure_clone(self._repo, self.settings.repo_url)
             stale = self.settings.data_dir / "worktrees"
             if stale.is_dir():
-                for path in stale.iterdir():
+                for path in sorted(stale.iterdir()):
+                    if path.suffix == ".pid":
+                        if not path.with_suffix("").exists():
+                            path.unlink(missing_ok=True)
+                        continue
+                    pids = pid_file(path)
+                    if pid_alive(pids):  # a playbook from before the restart, still going
+                        logger.warning("leaving %s: its playbook is still running", path)
+                        continue
+                    pids.unlink(missing_ok=True)
                     await self.git.remove_worktree(self._repo, path)
             self._ready = True
 
@@ -459,6 +480,8 @@ class Coordinator:
             # wait; the backups simply run again before the eventual run.
             if await self._held_by_printers(job_id, job):
                 return
+        if await self._held_by_peer(job_id, job):
+            return
 
         job = self._pending(job_id)  # cancelled while the gates ran?
         if job is None:
@@ -478,14 +501,30 @@ class Coordinator:
             elif printer_hold_applies(job.host, job.tags):
                 self._note(job, "printers idle")
             return False
+        return self._hold(job_id, printers.reason)
+
+    async def _held_by_peer(self, job_id: int, job) -> bool:
+        """Hold a deploy of a peer instance's own host while that peer is mid-run."""
+        if self.peer_running is None or job.host not in self.settings.peers:
+            return False
+        running = await self.peer_running(job.host)
+        if running is None:
+            self._note(job, f"peer {job.host} unreachable; not waiting for it")
+            return False
+        if not running:
+            return False
+        return self._hold(job_id, f"peer {job.host} has a running job")
+
+    def _hold(self, job_id: int, reason: str) -> bool:
+        """Put a pending job into `waiting` for `reason`, to be re-checked after RECHECK."""
         job = self._pending(job_id)
         if job is None:
             return True
         self._recheck_at[job_id] = self.clock() + RECHECK
-        if job.state == "waiting" and job.detail.get("gate") == printers.reason:
+        if job.state == "waiting" and job.detail.get("gate") == reason:
             return True  # still held for the same reason: nothing new to say
-        self._note(job, f"waiting: {printers.reason}")
-        self._set(job_id, "waiting", {"gate": printers.reason})
+        self._note(job, f"waiting: {reason}")
+        self._set(job_id, "waiting", {"gate": reason})
         return True
 
     async def _drop_worktree(self, path: Path) -> str | None:
@@ -513,14 +552,16 @@ class Coordinator:
         rc, crash = None, None
         try:
             rc = await self.runner.run(host, job.tags, worktree, log, env)
+        except asyncio.CancelledError:
+            # Shutdown: the playbook carries on from this worktree, so leave it (R27).
+            raise
         except Exception as exc:  # noqa: BLE001 — a runner bug fails this job only
             crash = f"runner error: {type(exc).__name__}: {exc}"
             self._note(job, crash)
-        finally:
-            cleanup = await self._drop_worktree(worktree)
-            if cleanup:
-                warnings.append(cleanup)
-                self._note(job, cleanup)
+        cleanup = await self._drop_worktree(worktree)
+        if cleanup:
+            warnings.append(cleanup)
+            self._note(job, cleanup)
 
         result = recap.parse(log.read_text(encoding="utf-8", errors="replace"))
         rey_printing = False

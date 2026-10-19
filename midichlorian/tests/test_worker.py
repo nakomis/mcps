@@ -1,4 +1,6 @@
 import asyncio
+import contextlib
+import dataclasses
 import os
 import shutil
 import subprocess
@@ -199,7 +201,7 @@ class World:
         self.gates = FakeGates()
         self.clock = FakeClock()
 
-    def coordinator(self, git=None):
+    def coordinator(self, git=None, peer_running=None):
         return Coordinator(
             self.settings,
             self.store,
@@ -209,6 +211,7 @@ class World:
             self.clock,
             gates=self.gates,
             git=git or self.git,
+            peer_running=peer_running,
         )
 
     def job(self, job_id):
@@ -871,6 +874,93 @@ async def test_restart_marks_running_interrupted_and_queue_continues(w):
     assert w.job(nxt.id).state == "succeeded"
     assert w.job(stuck.id).state == "interrupted"  # never re-run
     assert len(w.runner.calls) == 1
+
+
+# --- R27: a restart never cuts a playbook off ---------------------------------------------
+
+
+class FakePeer:
+    """peer_running(name): True (running job), False (idle) or None (unreachable)."""
+
+    def __init__(self, answer):
+        self.answer = answer
+        self.asked: list[str] = []
+
+    async def __call__(self, name):
+        self.asked.append(name)
+        return self.answer
+
+
+async def test_peer_busy_gate_waits_then_proceeds(w):
+    w.settings = dataclasses.replace(w.settings, peers={"mace": "http://mace:9140"})
+    peer = FakePeer(True)
+    c = w.coordinator(peer_running=peer)
+    job_id = (await c.submit(["mace"], "c", None, False, "s")).jobs[0]["job_id"]
+    await settle(c)
+    job = w.job(job_id)
+    assert job.state == "waiting"
+    assert job.detail["gate"] == "peer mace has a running job"
+    assert w.runner.calls == []
+    peer.answer = False
+    w.clock.advance(61)
+    await settle(c)
+    assert w.job(job_id).state == "succeeded"
+    assert "gate" not in w.job(job_id).detail
+    assert peer.asked == ["mace", "mace"]
+
+
+async def test_peer_gate_only_for_the_peers_own_host(w):
+    w.settings = dataclasses.replace(w.settings, peers={"mace": "http://mace:9140"})
+    peer = FakePeer(True)
+    c = w.coordinator(peer_running=peer)
+    job_id = (await c.submit(["cal"], "c", None, False, "s")).jobs[0]["job_id"]
+    await settle(c)
+    assert w.job(job_id).state == "succeeded" and peer.asked == []
+
+
+async def test_unreachable_peer_proceeds_with_a_note(w):
+    w.settings = dataclasses.replace(w.settings, peers={"mace": "http://mace:9140"})
+    c = w.coordinator(peer_running=FakePeer(None))
+    job_id = (await c.submit(["mace"], "c", None, False, "s")).jobs[0]["job_id"]
+    await settle(c)
+    job = w.job(job_id)
+    assert job.state == "succeeded"
+    assert "peer mace unreachable; not waiting for it" in Path(job.log_path).read_text()
+
+
+async def test_cancelled_run_task_leaves_its_worktree_for_the_playbook(w):
+    """Server shutdown cancels the job task; the playbook carries on in its own
+    session, so its checkout must stay where it is."""
+    w.runner.gate = asyncio.Event()
+    c = w.coordinator()
+    job_id = (await c.submit(["cal"], "c", None, False, "s")).jobs[0]["job_id"]
+    await c.tick()
+    await until(lambda: w.runner.active == 1)
+    worktree = w.settings.data_dir / "worktrees" / str(job_id)
+    _, task = c._inflight[job_id]
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert worktree.is_dir() and worktree in w.git.worktrees
+    assert w.job(job_id).state == "running"  # the restart will say interrupted
+
+
+async def test_restart_keeps_a_live_playbooks_worktree(w):
+    rid = w.store.create_request(["leia"], "c", None, False, "old")
+    alive = w.store.add_job(rid, "leia", "c", None, 0, False, "old")
+    w.store.set_state(alive.id, "running", started="2026-10-19T11:00:00Z")
+    trees = w.settings.data_dir / "worktrees"
+    live, dead = trees / str(alive.id), trees / "999"
+    live.mkdir(parents=True)
+    dead.mkdir()
+    (trees / f"{alive.id}.pid").write_text(f"{os.getpid()}\n")  # a process that exists
+    (trees / "999.pid").write_text("999999999\n")  # one that does not
+
+    c = w.coordinator()
+    assert "may still be running" in w.job(alive.id).detail["reason"]
+    await settle(c)
+    assert live.is_dir() and (trees / f"{alive.id}.pid").exists()
+    assert not dead.exists() and not (trees / "999.pid").exists()
 
 
 # --- events ------------------------------------------------------------------------------

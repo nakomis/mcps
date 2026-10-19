@@ -654,3 +654,27 @@ async def test_octoprint_key_empty_output_is_none(caplog):
         return RunResult(0, "\n", "")
 
     assert await api.resolve_octoprint_key({}, run=run) is None
+
+
+async def test_peer_running_check(tmp_path):
+    answers = {"jobs": [{"state": "queued"}, {"state": "running"}]}
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        if answers is None:
+            raise httpx.ConnectError("down", request=request)
+        return httpx.Response(200, json=answers)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    check = api.peer_running_check(settings(tmp_path, {"mace": "http://mace:9140/"}), client)
+    assert await check("mace") is True
+    req = seen[-1]
+    assert str(req.url) == "http://mace:9140/api/queue?local=1"
+    assert req.headers["authorization"] == f"Bearer {TOKEN}"
+    answers = {"jobs": [{"state": "queued"}, "junk", {"state": "waiting"}]}
+    assert await check("mace") is False
+    answers = {"jobs": "not a list"}
+    assert await check("mace") is None
+    answers = None
+    assert await check("mace") is None

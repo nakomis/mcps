@@ -102,8 +102,13 @@ cd midichlorian && uv run pytest -q
 - `override_printer` bypasses that hold. A session sets it only when Martin has
   explicitly said so in that session.
 - A running playbook is never interrupted. Only queued or waiting runs can be
-  cancelled; a server restart marks a run that was running as `interrupted` and
-  carries on with the queue.
+  cancelled. Stopping or restarting the server does not stop a playbook either:
+  it runs in its own session, writing straight to its log, and finishes on its
+  own; the restarted server marks the run `interrupted` (check the host), keeps
+  its checkout until the process has gone, and carries on with the queue.
+- Each instance holds a deploy of its peer's own host (`cere` on mace, `mace` on
+  Cere), which restarts the peer, while the peer has a running job. An
+  unreachable peer is not waited for.
 - A second request for a host that is already running queues behind it.
 - Run output in callback messages (log tails, task names, errors) is attacker-
   influenced, so it is fenced in a code block labelled as untrusted data.
