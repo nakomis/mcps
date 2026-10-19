@@ -1,0 +1,30 @@
+ok: [leia.local]
+
+TASK [Capture what is holding the root filesystem — OS-layer] ******************
+skipping: [leia.local]
+
+TASK [Report what is holding the root filesystem — OS-layer] *******************
+skipping: [leia.local]
+
+TASK [Fail because / is still read-write and reboots are disallowed — OS-layer] ***
+skipping: [leia.local]
+
+TASK [Reboot to return / to read-only — OS-layer] ******************************
+skipping: [leia.local]
+
+TASK [Read the root mount options after closing the window — OS-layer] *********
+ok: [leia.local]
+
+TASK [Record that / is read-only again — OS-layer] *****************************
+ok: [leia.local]
+
+TASK [Fail loudly because / is still read-write — OS-layer] ********************
+skipping: [leia.local]
+
+TASK [Flip root filesystem to read-only in fstab] ******************************
+skipping: [leia.local]
+
+PLAY RECAP *********************************************************************
+leia.local                 : ok=273  changed=24   unreachable=0    failed=0    skipped=80   rescued=0    ignored=0   
+
+exit 0
