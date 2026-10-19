@@ -431,6 +431,19 @@ async def test_already_deployed_short_circuits_at_submit(w):
     assert w.job(res.jobs[1]["job_id"]).state == "succeeded"
 
 
+async def test_git_error_in_the_already_check_refuses_the_request(w):
+    w.store.record_deploy("leia", "b", None, "2026-10-19T09:00:00Z")
+    c = w.coordinator()
+
+    async def broken(repo, a, b):
+        raise GitError("fatal: bad object")
+
+    w.git.is_ancestor = broken
+    res = await c.submit(["leia", "cal"], "c", None, False, "s")
+    assert states(res) == ["failed", "failed"]
+    assert all("git error: fatal: bad object" in j["reason"] for j in res.jobs)
+
+
 async def test_every_host_already_deployed_returns_at_once(w):
     w.store.record_deploy("leia", "c", None, "2026-10-19T00:00:00Z")
     w.store.record_deploy("cal", "c", None, "2026-10-19T00:00:00Z")

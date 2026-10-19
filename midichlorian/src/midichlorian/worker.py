@@ -251,12 +251,16 @@ class Coordinator:
                 }
             )
 
+        if not refusal:
+            try:
+                covered = {h: await self._covered_by(h, resolved, tags) for h in hosts}
+            except GitError as exc:
+                refusal = f"git error: {exc}"
         if refusal:
             for i, host in enumerate(hosts):
                 add(i, host, "failed", reason=refusal)
             return result
 
-        covered = {h: await self._covered_by(h, resolved, tags) for h in hosts}
         needs_run = [h for h in hosts if covered[h] is None]
         for i, host in enumerate(hosts):
             if covered[host]:
@@ -300,11 +304,14 @@ class Coordinator:
         target = merge_target(mergeable, host, tags)
         if target is None:
             return False
-        newer = (
-            sha
-            if await self.git.is_ancestor(self._repo, target.sha, sha)
-            else target.sha
-        )
+        try:
+            newer = (
+                sha
+                if await self.git.is_ancestor(self._repo, target.sha, sha)
+                else target.sha
+            )
+        except GitError:
+            return False  # can't tell which is newer: queue a job of its own
         target = self._pending(target.id)
         if (
             target is None or target.id in self._inflight
