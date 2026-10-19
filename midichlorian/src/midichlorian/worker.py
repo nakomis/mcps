@@ -91,7 +91,6 @@ class Coordinator:
             int, tuple[str, asyncio.Task]
         ] = {}  # job id -> (host, task)
         self._recheck_at: dict[int, datetime] = {}
-        self._subscribers: list[asyncio.Queue] = []
         self._ready = False
         self.interrupted = store.recover_interrupted()
         for job_id in self.interrupted:
@@ -105,29 +104,6 @@ class Coordinator:
             }
             store.set_state(job_id, "interrupted", detail=detail)
 
-    # --- events ---------------------------------------------------------------------
-
-    def subscribe(self, maxsize: int = 1000) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue(maxsize)
-        self._subscribers.append(q)
-        return q
-
-    def unsubscribe(self, q: asyncio.Queue) -> None:
-        with contextlib.suppress(ValueError):
-            self._subscribers.remove(q)
-
-    def _emit(self, job_id: int) -> None:
-        job = self.store.get_job(job_id)
-        if job is None:
-            return
-        event = {"type": "job", "job": asdict(job)}
-        for q in list(self._subscribers):
-            if q.full():  # never block on a slow listener: drop its oldest event
-                with contextlib.suppress(asyncio.QueueEmpty):
-                    q.get_nowait()
-            with contextlib.suppress(asyncio.QueueFull):
-                q.put_nowait(event)
-
     # --- small helpers ------------------------------------------------------------------
 
     def _set(
@@ -139,7 +115,6 @@ class Coordinator:
             k: v for k, v in {**job.detail, **(detail or {})}.items() if k not in drop
         }
         self.store.set_state(job_id, state, detail=merged, **fields)
-        self._emit(job_id)
         self._wake.set()
 
     def _finish(self, job, state: str, reason: str | None = None, **detail) -> None:

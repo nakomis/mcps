@@ -573,10 +573,12 @@ async def test_printer_busy_waits_then_runs_when_idle(w):
     await settle(c)
     assert w.probes.calls == 1  # not re-checked within 60 s
     w.clock.advance(31)
-    q = c.subscribe()
+    writes = []
+    set_state = w.store.set_state
+    w.store.set_state = lambda *a, **k: writes.append(a) or set_state(*a, **k)
     await settle(c)
     assert w.probes.calls == 2 and w.job(job.id).state == "waiting"
-    assert q.empty()  # same hold, same reason: no new event
+    assert writes == []  # same hold, same reason: nothing rewritten
     w.probes.busy = False
     w.clock.advance(61)
     await settle(c)
@@ -1031,35 +1033,7 @@ async def test_restart_keeps_a_live_playbooks_worktree(w):
     assert not dead.exists() and not (trees / "999.pid").exists()
 
 
-# --- events ------------------------------------------------------------------------------
-
-
-async def test_subscribers_see_every_state_change(w):
-    c = w.coordinator()
-    q = c.subscribe()
-    res = await c.submit(["cal"], "c", None, False, "s")
-    await settle(c)
-    seen = []
-    while not q.empty():
-        ev = q.get_nowait()
-        assert ev["type"] == "job"
-        if ev["job"]["id"] == res.jobs[0]["job_id"]:
-            seen.append(ev["job"]["state"])
-    assert seen[0] == "queued" and "running" in seen and seen[-1] == "succeeded"
-    c.unsubscribe(q)
-    await c.submit(["mace"], "c", None, False, "s")
-    assert q.empty()
-
-
-async def test_slow_subscriber_never_blocks(w):
-    c = w.coordinator()
-    q = c.subscribe(maxsize=2)
-    res = await c.submit(["cal"], "c", None, False, "s")
-    await settle(c)
-    assert q.qsize() == 2
-    events = [q.get_nowait(), q.get_nowait()]
-    assert events[-1]["job"]["state"] == "succeeded"  # oldest dropped, newest kept
-    assert events[-1]["job"]["id"] == res.jobs[0]["job_id"]
+# --- the loop ----------------------------------------------------------------------------
 
 
 async def test_run_forever_processes_submissions(w):
