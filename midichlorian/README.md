@@ -36,18 +36,18 @@ Read by `midichlorian-server` (`config.py`, `api.py`, `runner.py`).
 
 | Variable | Required | Meaning |
 |---|---|---|
-| `MIDICHLORIAN_INSTANCE` | yes | This instance's name (for example `cere`). Must not be in `_SERVED` |
+| `MIDICHLORIAN_INSTANCE` | yes | This instance's name (for example `cere`). Must not also appear in `MIDICHLORIAN_SERVED` |
 | `MIDICHLORIAN_SERVED` | yes | Comma-separated hosts this instance runs playbooks for |
 | `MIDICHLORIAN_DATA_DIR` | yes | Directory for the SQLite database (`midichlorian.db`) |
 | `MIDICHLORIAN_REPO_DIR` | yes | The server's clone of home-infra, fetched before each commit check |
 | `MIDICHLORIAN_REPO_URL` | no | Repository to clone from (default `https://github.com/nakomis/home-infra.git`) |
-| `MIDICHLORIAN_TOKEN` | yes | API bearer token (64 hex characters; held in SSM) |
+| `MIDICHLORIAN_TOKEN` | yes | API bearer token (a 64-hex-character token, by convention; held in SSM) |
 | `MIDICHLORIAN_PEERS` | no | `name=url,name=url` of the other instances |
 | `MIDICHLORIAN_BIND` | no | Listen address (default `0.0.0.0`) |
 | `MIDICHLORIAN_PORT` | no | Listen port (default `9140`) |
 | `MIDICHLORIAN_OCTOPRINT_KEY` | no | OctoPrint API key for the printer-busy check; if unset it is read from SSM, and if that fails the Prusa reads as unreachable (with a warning) |
-| `GH_TOKEN` | no | GitHub token for fetching a private home-infra; inherited by gates and playbook runs |
-| `AWS_CONFIG_FILE` | no | AWS config for the SSM reads and playbook runs; inherited like `GH_TOKEN` |
+| `GH_TOKEN` | no | Not read by name: the server's environment is inherited by gates and playbook runs, so a GitHub token set here is what git uses |
+| `AWS_CONFIG_FILE` | no | Not read by name: inherited by the SSM reads and playbook runs like the rest of the environment |
 
 ## MCP configuration
 
@@ -57,7 +57,7 @@ Read by `midichlorian-mcp`.
 |---|---|
 | `MIDICHLORIAN_INSTANCES` | `name=url,name=url`; the first is the primary |
 | `MIDICHLORIAN_TOKEN` | The API bearer token |
-| `CLAUDE_SESSION_NAME` | Optional. The default `requester`; otherwise `session-<pid>`. It only arrives if it is in meta-mcp's own environment, since meta-mcp merges its environment with the entry's `env` |
+| `CLAUDE_SESSION_NAME` | Optional. The requester name for deploys; if unset, `session-<pid>` |
 | `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN` | Inherited from the Claude session and used to push results back into it. The token stays on the Mac and is never sent to the server or logged |
 
 An example meta-mcp entry is in `meta-mcp/config.toml.example`.

@@ -43,12 +43,10 @@ command = ["uvx", "mcp-for-blender==2.1.9"]
 env = {DISABLE_TELEMETRY = "true"}
 
 # midichlorian: queue and gate Ansible playbook runs on the home servers.
-# MIDICHLORIAN_INSTANCES is name=url,name=url (the first is the primary). Keep the
-# real token out of this file's committed copy. meta-mcp merges its own environment
-# with `env`, so CLAUDE_SESSION_NAME reaches the MCP only if Claude Code exports it
-# to meta-mcp; otherwise the requester falls back to session-<pid>.
+# MIDICHLORIAN_INSTANCES is name=url,name=url (the first is the primary).
+# CLAUDE_SESSION_NAME reaches the MCP only if exported to meta-mcp; else requester is session-<pid>.
 [[mcps]]
 name = "midichlorian"
 description = "queue and run Ansible playbooks on the home servers"
 command = ["uv", "--directory", "/path/to/mcps/midichlorian", "run", "midichlorian-mcp"]
-env = {MIDICHLORIAN_INSTANCES = "cere=http://<cere-ip>:9140,mace=http://172.29.0.3:9140", MIDICHLORIAN_TOKEN = "<api-token>"}
+env = {MIDICHLORIAN_INSTANCES = "cere=http://<cere-ip>:9140,mace=http://<mace-ip>:9140", MIDICHLORIAN_TOKEN = "<api-token>"}
