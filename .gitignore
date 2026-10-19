@@ -10,3 +10,4 @@ build/
 *.env
 .DS_Store
 uv.lock
+!midichlorian/uv.lock
