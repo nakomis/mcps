@@ -286,6 +286,7 @@ async def test_tool_descriptions_carry_the_override_warning():
         tools["deploy"].description
     )
     assert "every luke run, tagged or not" in tools["deploy"].description  # R26
+    assert "cancels it for every requester" in tools["cancel"].description
     for name in ("run", "run_log", "cancel"):
         assert "instance" in tools[name].inputSchema["properties"]
 

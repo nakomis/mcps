@@ -537,7 +537,10 @@ async def deploy(
 @mcp.tool()
 async def cancel(run_id: int, instance: str | None = None) -> dict:
     """Cancel a queued or waiting run (a running one cannot be cancelled: error 409). Pass
-    `instance` for runs not on the primary instance."""
+    `instance` for runs not on the primary instance.
+
+    Requests for the same host can be merged into one run (its `requesters` lists them):
+    cancelling a merged run cancels it for every requester, not just this session."""
     return await service().cancel(run_id, instance)
 
 

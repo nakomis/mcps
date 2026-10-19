@@ -43,7 +43,7 @@ Read by `midichlorian-server` (`config.py`, `api.py`, `runner.py`).
 |---|---|---|
 | `MIDICHLORIAN_INSTANCE` | yes | This instance's name (for example `cere`). Must not also appear in `MIDICHLORIAN_SERVED` |
 | `MIDICHLORIAN_SERVED` | yes | Comma-separated hosts this instance runs playbooks for |
-| `MIDICHLORIAN_DATA_DIR` | yes | Directory for the SQLite database (`midichlorian.db`) |
+| `MIDICHLORIAN_DATA_DIR` | yes | Directory for the SQLite database (`midichlorian.db`), the run logs (`logs/`) and each run's checkout (`worktrees/`) |
 | `MIDICHLORIAN_REPO_DIR` | yes | The server's clone of home-infra, fetched before each commit check |
 | `MIDICHLORIAN_REPO_URL` | no | Repository to clone from (default `https://github.com/nakomis/home-infra.git`) |
 | `MIDICHLORIAN_TOKEN` | yes | API bearer token (a 64-hex-character token, by convention; held in SSM) |
@@ -63,7 +63,7 @@ Read by `midichlorian-mcp`.
 |---|---|
 | `MIDICHLORIAN_INSTANCES` | `name=url,name=url`; the first is the primary |
 | `MIDICHLORIAN_TOKEN` | The API bearer token |
-| `CLAUDE_SESSION_NAME` | Optional. The requester name for deploys; if unset, `session-<pid>` |
+| `CLAUDE_SESSION_NAME` | Optional. The requester name for deploys; if unset, `session-<pid>`. meta-mcp passes its own environment to sub-MCPs, so this is only set if Claude Code exports it to meta-mcp |
 | `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN` | Inherited from the Claude session and used to push results back into it. The token stays on the Mac and is never sent to the server or logged |
 
 An example meta-mcp entry is in `meta-mcp/config.toml.example`.
