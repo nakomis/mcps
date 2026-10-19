@@ -52,7 +52,7 @@ async def check_printers(host: str, tags, override: bool, probes) -> GateResult:
 
 async def run_luke_backups(ssh) -> GateResult:
     r = await ssh(hosts.HOSTS["luke"], "./run-backups.sh", timeout=1800)
-    if r.rc == 0 and BACKUP_OK in r.stdout:
+    if r.rc == 0 and BACKUP_OK in r.stdout + r.stderr:
         return _ok()
     tail = "\n".join((r.stdout + r.stderr).strip().splitlines()[-20:])
     return _fail(f"Luke backups failed (rc {r.rc}):\n{tail}")

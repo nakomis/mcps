@@ -41,7 +41,14 @@ async def cthulhu_state(client: httpx.AsyncClient, url: str = CTHULHU_URL) -> Pr
         return PrinterState("cthulhu", False, f"Cthulhu unreachable ({type(exc).__name__})", False)
     if not data.get("connected"):
         return PrinterState("cthulhu", False, "Cthulhu not connected", True)
-    label = (data.get("print") or {}).get("statusLabel") or ""
+    job = data.get("print")
+    label = job.get("statusLabel") if isinstance(job, dict) else None
+    if label is None:
+        label = ""
+    if not isinstance(label, str):
+        return PrinterState("cthulhu", False, "Cthulhu unreachable (bad status payload)", False)
+    if job is not None and not isinstance(job, dict):
+        return PrinterState("cthulhu", False, "Cthulhu unreachable (bad status payload)", False)
     if label in CTHULHU_IDLE:
         return PrinterState("cthulhu", False, f"Cthulhu: {label or 'Idle'}", True)
     return PrinterState("cthulhu", True, f"Cthulhu: {label}", True)

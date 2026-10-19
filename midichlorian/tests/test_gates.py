@@ -86,3 +86,17 @@ async def test_remote_run_basics():
     r = await remote.run(["sleep", "5"], timeout=0.2)
     assert (r.rc, r.stderr) == (124, "timeout")
     assert (await remote.run(["/nonexistent-bin"])).rc == 127
+
+
+async def test_multiple_busy_printers_in_one_reason():
+    other = PrinterState("octoprint", True, "Prusa: Printing", True)
+    g = await gates.check_printers("leia", None, False, FakeProbes(BUSY, other, IDLE))
+    assert "Cthulhu: Lifting" in g.reason and "Prusa: Printing" in g.reason
+    assert "Operational" not in g.reason
+
+
+async def test_backup_success_string_on_stderr():
+    async def ssh(host, command, timeout=60, stdin=None):
+        return remote.RunResult(0, "", "All databases backed up and verified")
+
+    assert (await gates.run_luke_backups(ssh)).ok

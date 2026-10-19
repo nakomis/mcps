@@ -102,3 +102,26 @@ async def test_probes_states():
         states = await Probes(c, LEIA, fake_ssh(), "k").states()
     assert [s.name for s in states] == ["cthulhu", "octoprint"]
     assert [s.busy for s in states] == [False, True]
+
+
+async def test_cthulhu_malformed_print_payload():
+    for payload in ({"connected": True, "print": None},):
+        async with client(lambda r, p=payload: httpx.Response(200, json=p)) as c:
+            s = await cthulhu_state(c)
+        assert not s.busy and s.detail
+    for payload in (
+        {"connected": True, "print": "x"},
+        {"connected": True, "print": {"statusLabel": ["a"]}},
+        {"connected": True, "print": {"statusLabel": 5}},
+    ):
+        async with client(lambda r, p=payload: httpx.Response(200, json=p)) as c:
+            s = await cthulhu_state(c)
+        assert not s.busy and not s.reachable and s.detail
+
+
+async def test_octoprint_missing_container_is_idle_and_reachable():
+    async def ssh(host, command, timeout=60, stdin=None):
+        return remote.RunResult(1, "", "Error: No such object: gateway-octoprint-1")
+
+    s = await octoprint_state(ssh, LEIA, "k")
+    assert not s.busy and s.reachable and "not running" in s.detail

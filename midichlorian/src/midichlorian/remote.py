@@ -1,6 +1,7 @@
 """Run local and remote commands without ever raising for a non-zero exit."""
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 
 from midichlorian.hosts import HostSpec
@@ -32,7 +33,8 @@ async def run(
     try:
         out, err = await asyncio.wait_for(proc.communicate(stdin), timeout)
     except asyncio.TimeoutError:
-        proc.kill()
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
         await proc.wait()
         return RunResult(124, "", "timeout")
     return RunResult(
@@ -50,6 +52,7 @@ async def ssh(
             "ssh",
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=10",
+            "-o", "ServerAliveInterval=30",
             f"nakomis@{host.ssh}",
             command,
         ],
