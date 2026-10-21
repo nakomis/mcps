@@ -15,22 +15,23 @@ Two entry points:
 
 ## Architecture
 
-Two server instances, each serving the hosts the other cannot run for:
+One server instance, on mace, serves `luke`, `leia`, `cal`, `rey`, `cere` and the
+web UI. It builds the controller-side images with mace's own Docker daemon, so the
+Docker, printer, AWS and Luke backup gates all run there.
 
-- the **mace** instance (the primary) serves `luke`, `leia`, `cal`, `rey`, `cere` and
-  the web UI. It builds the controller-side images with mace's own Docker daemon,
-  so the Docker, printer, AWS and Luke backup gates all run there;
-- the **Cere** instance serves `mace` only, and needs no Docker.
+No host ever runs its own playbook, so `mace` itself is not served: it runs
+midichlorian, and is deployed by hand from the workstation. Asking the MCP to
+deploy `mace` returns an error saying so.
 
-No host ever runs its own playbook. The instances know each other as peers; the
-first instance listed in the MCP's `MIDICHLORIAN_INSTANCES` is the primary and
-merges its peers' reads. A `deploy` that spans both instances is submitted in
-groups, each only after the previous group succeeded. If the first host of a
-request fails, the later hosts are marked `skipped` and every requester is told.
+Several instances are supported but optional (for example, a second one serving
+`mace`). They know each other as peers (`MIDICHLORIAN_PEERS`); the first instance
+listed in the MCP's `MIDICHLORIAN_INSTANCES` is the primary and merges its peers'
+reads. A `deploy` that spans instances is submitted in groups, each only after the
+previous group succeeded. In either setup, if the first host of a request fails,
+the later hosts are marked `skipped` and every requester is told.
 
 A run deploys `origin/main`'s head as it starts, unless the request named a full
-40-character sha, which is deployed exactly. Every later host of a request, on
-either instance, gets the commit its first host deployed, so a rollout is one
+40-character sha, which is deployed exactly. Every later host of a request gets the commit its first host deployed, so a rollout is one
 commit even if main moves on meanwhile.
 
 When a run ends (or first starts waiting on a printer), the MCP pushes a message
@@ -64,7 +65,7 @@ Read by `midichlorian-mcp`.
 
 | Variable | Meaning |
 |---|---|
-| `MIDICHLORIAN_INSTANCES` | `name=url,name=url`; the first is the primary |
+| `MIDICHLORIAN_INSTANCES` | `name=url` (one instance); `name=url,name=url` for several, the first being the primary |
 | `MIDICHLORIAN_TOKEN` | The API bearer token |
 | `CLAUDE_SESSION_NAME` | Optional. The requester name for deploys; if unset, `session-<pid>`. meta-mcp passes its own environment to sub-MCPs, so this is only set if Claude Code exports it to meta-mcp |
 | `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN` | Inherited from the Claude session and used to push results back into it. The token stays on the Mac and is never sent to the server or logged |
@@ -113,7 +114,7 @@ cd midichlorian && uv run pytest -q
 - A running playbook is never interrupted by midichlorian. Only queued or waiting
   runs can be cancelled. Stopping the server never signals a playbook either, but
   whether it survives depends on how the server runs:
-  - As a plain service (the Cere instance, under launchd) the playbook runs in its
+  - As a plain service (for example under launchd) the playbook runs in its
     own session, writing straight to its log, and finishes on its own. The
     restarted server marks the run `interrupted` (check the host), keeps its
     checkout until the process has gone, holds that host's queue until it has (the
@@ -127,9 +128,9 @@ cd midichlorian && uv run pytest -q
     ones every 30 seconds, before it exits. The API is down while it waits. The
     supervisor's grace period (for Docker, `stop_grace_period`) must be longer
     than the longest playbook, or the kill comes anyway.
-- Each instance holds a deploy of its peer's own host (`cere` on mace, `mace` on
-  Cere), which restarts the peer, while the peer has a running job. An
-  unreachable peer is not waited for.
+- With several instances, each holds a deploy of its peer's own host, which
+  restarts the peer, while the peer has a running job. An unreachable peer is not
+  waited for. A single instance has no peer to wait for.
 - A second request for a host that is already running queues behind it.
 - Run output in callback messages (log tails, task names, errors) is attacker-
   influenced, so it is fenced in a code block labelled as untrusted data.

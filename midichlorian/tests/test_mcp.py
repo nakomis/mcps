@@ -225,6 +225,19 @@ async def test_host_map_cached_and_refreshed_on_served_by_400(svc, estate):
     assert [p[0] for p in estate.posts] == ["cere"] * 4
 
 
+async def test_deploying_mace_through_a_single_instance_is_a_clear_error(estate, sent):
+    s = Service(
+        {"mace": "http://mace.test:9140"}, "tok", transport=estate.transport(),
+        poll_interval=0, notify=lambda t: sent.append(t) or True, default_requester="s",
+    )
+    out = await s.deploy(["mace"])
+    assert "no configured instance serves: mace" in out["error"]
+    assert "deploy it by hand from the workstation" in out["error"]
+    assert not estate.posts and not s.followers
+    out = await s.deploy(["tatooine"])  # other unknown hosts get no mace hint
+    assert "by hand" not in out["error"]
+
+
 async def test_deploy_error_is_returned_not_raised(svc, estate):
     estate.deploy_400 = ["unknown hosts: tatooine"]
     out = await svc.deploy(["luke"])

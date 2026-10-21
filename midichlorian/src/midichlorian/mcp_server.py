@@ -184,7 +184,13 @@ class Service:
             await self._load_map()
         unknown = [h for h in hosts if h not in (self._served or {})]
         if unknown:
-            raise ApiError(400, f"no configured instance serves: {', '.join(unknown)}")
+            hint = ""
+            if "mace" in unknown:
+                hint = (
+                    "; mace runs midichlorian itself, so deploy it by hand from the "
+                    "workstation with its ansible wrapper"
+                )
+            raise ApiError(400, f"no configured instance serves: {', '.join(unknown)}{hint}")
         groups: list[tuple[str, list[str]]] = []
         for host in hosts:
             inst = self._served[host]
@@ -518,8 +524,9 @@ async def deploy(
     later as a message in this session beginning "[midichlorian]", so do not poll.
 
     hosts: run in order; if one fails, later ones are skipped. Hosts on different instances
-        (mace serves luke leia cal rey cere; cere serves mace) are submitted in groups, each
-        only after the previous group succeeded.
+        (only with several instances configured) are submitted in groups, each only after the
+        previous group succeeded. `mace` is not deployable here: it runs midichlorian itself and
+        is deployed by hand from the workstation.
     sha: "main" (the default) means origin/main's head when each run starts; or a commit
         on main. A full 40-character sha deploys exactly that commit; anything shorter
         deploys main's head once the commit is on main. Every host of one deploy gets
