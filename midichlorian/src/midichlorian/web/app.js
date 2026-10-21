@@ -34,6 +34,7 @@ const state = {
   confirming: null,    // run key whose cancel button is armed
   log: null,           // {key, source, timer, text}
   autoOpened: new Set(),
+  expanded: new Set(), // clamp keys the user has expanded; survives polling repaints
   stick: true,
 };
 
@@ -145,6 +146,71 @@ async function api(path, options) {
   return body;
 }
 
+/* ---------- clamped free text ---------- */
+
+/* Long free text (failure reasons, gate names) shows two lines with an ellipsis and a
+   "Show more" button that only appears when the text really overflows. The toggle state is
+   kept in state.expanded under a per-run key, so it survives the repaints polling causes.
+   The text only ever goes in through textContent. */
+
+let clampSeq = 0;
+let fitQueued = false;
+
+/* In the collapsed view only, a run of three or more of one punctuation character
+   (an SSH host-key banner's @@@@@) is shown as three. The expanded text is verbatim. */
+function squeezeRuns(text) {
+  return text.replace(/([\p{P}\p{S}])\1{2,}/gu, "$1$1$1");
+}
+
+function setClampOpen(wrap, open) {
+  const { body, button, full } = wrap;
+  body.classList.toggle("open", open);
+  body.textContent = open ? full : squeezeRuns(full);
+  button.textContent = open ? "Show less" : "Show more";
+  button.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function clampText(key, text, cls) {
+  const full = String(text);
+  const body = el("div", "clamp" + (cls ? " " + cls : ""));
+  body.id = "clamp-" + ++clampSeq;
+  const button = el("button", "clamp-toggle");
+  button.type = "button";
+  button.hidden = true;
+  button.setAttribute("aria-controls", body.id);
+  const wrap = el("div", "clamp-wrap", body, button);
+  Object.assign(wrap, { body, button, full, key });
+  setClampOpen(wrap, state.expanded.has(key));
+  button.addEventListener("click", (e) => {
+    e.stopPropagation();  // rows are clickable
+    const open = !state.expanded.has(key);
+    if (open) state.expanded.add(key); else state.expanded.delete(key);
+    setClampOpen(wrap, open);
+  });
+  scheduleFit();
+  return wrap;
+}
+
+/* Measure in the collapsed state (scrollHeight against clientHeight) after layout, then put
+   the saved state back. A hidden panel measures 0, so it is simply measured again later. */
+function fitClamps() {
+  fitQueued = false;
+  for (const wrap of document.querySelectorAll(".clamp-wrap")) {
+    const { body, button, key } = wrap;
+    const open = state.expanded.has(key);
+    if (open) setClampOpen(wrap, false);
+    const overflows = body.scrollHeight > body.clientHeight + 1;
+    if (open) setClampOpen(wrap, true);
+    button.hidden = !overflows;
+  }
+}
+
+function scheduleFit() {
+  if (fitQueued) return;
+  fitQueued = true;
+  requestAnimationFrame(fitClamps);
+}
+
 /* ---------- banner ---------- */
 
 function renderBanner() {
@@ -216,7 +282,9 @@ function hostCard(host) {
     link.href = hashFor(host.served_by, host.last.id);
     last.append(link, timeNode(host.last.finished));
     card.append(last);
-    if (host.last.reason) card.append(el("div", "muted", host.last.reason));
+    if (host.last.reason) {
+      card.append(clampText("card:" + host.name + ":" + runKey(host.served_by, host.last.id), host.last.reason, "muted"));
+    }
   }
   const gates = gateBadges(host);
   if (gates.length) card.append(el("div", "badges", ...gates));
@@ -278,15 +346,15 @@ function jobRow(job, withCancel) {
   const key = runKey(job.instance, job.id);
   if (state.selected && runKey(state.selected.instance, state.selected.id) === key) row.classList.add("selected");
   const meta = el("div", "meta", shaNode(job.sha), " · " + tagsText(job.tags));
-  if (job.state === "waiting" && job.detail && job.detail.gate) {
-    meta.append(" · ", badge(job.detail.gate, "warn"));
-  } else if (job.reason || (job.detail && job.detail.reason)) {
-    meta.append(" · " + (job.reason || job.detail.reason));
-  }
   const when = job.finished || job.started || job.created;
   meta.append(" · ", timeNode(when));
   if (job.requesters && job.requesters.length) meta.append(" · " + job.requesters.join(", "));
   if (!isLocal(job.instance)) meta.append(" · on " + job.instance);
+  if (job.state === "waiting" && job.detail && job.detail.gate) {
+    meta.append(clampText("gate:" + key, job.detail.gate, "clamp-badge"));
+  } else if (job.reason || (job.detail && job.detail.reason)) {
+    meta.append(clampText("row:" + key, job.reason || job.detail.reason));
+  }
 
   const actions = el("div", "actions");
   if (withCancel && PENDING.includes(job.state)) actions.append(cancelButton(job));
@@ -339,8 +407,9 @@ function renderDetail(job) {
   const pairs = [];
   pairs.push(...kv("Host", job.host + (isLocal(job.instance) ? "" : " (via " + job.instance + ")")));
   pairs.push(...kv("State", stateBadge(job.state)));
-  if (d.reason) pairs.push(...kv("Reason", d.reason));
-  if (d.gate) pairs.push(...kv("Waiting on", badge(d.gate, "warn")));
+  const dkey = runKey(job.instance, job.id);
+  if (d.reason) pairs.push(...kv("Reason", clampText("detail:" + dkey, d.reason)));
+  if (d.gate) pairs.push(...kv("Waiting on", clampText("detail-gate:" + dkey, d.gate, "clamp-badge")));
   pairs.push(...kv("Requested", shaNode(d.requested_sha || job.sha)));
   if (d.deployed_sha) pairs.push(...kv("Deployed", shaNode(d.deployed_sha)));
   pairs.push(...kv("Tags", tagsText(job.tags)));
@@ -625,4 +694,5 @@ $("log-output").addEventListener("scroll", () => {
   state.stick = o.scrollTop + o.clientHeight >= o.scrollHeight - 24;
 });
 window.addEventListener("hashchange", applyHash);
+window.addEventListener("resize", scheduleFit);
 start();

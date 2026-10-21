@@ -75,3 +75,19 @@ def test_printer_badges_only_where_the_hold_applies(client):
     # printer_sensitive is the string "never" on cal, mace and cere, which is truthy
     js = client.get("/app.js").text
     assert 'gates.printer_sensitive && gates.printer_sensitive !== "never"' in js
+
+
+def test_favicon_is_served_and_linked(client):
+    assert 'rel="icon" href="/favicon.png"' in client.get("/").text
+    icon = client.get("/favicon.png")
+    assert icon.status_code == 200
+    assert icon.content.startswith(b"\x89PNG")
+
+
+def test_long_text_is_clamped_with_an_accessible_toggle(client):
+    js = client.get("/app.js").text
+    css = client.get("/style.css").text
+    assert "-webkit-line-clamp: 2" in css
+    assert 'setAttribute("aria-expanded"' in js
+    assert "scrollHeight > body.clientHeight" in js
+    assert "state.expanded" in js
