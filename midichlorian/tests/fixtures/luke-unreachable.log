@@ -1,0 +1,34 @@
+TASK [Record what the first scan found — OS-layer] *****************************
+ok: [host-a]
+
+TASK [Check that needrestart is installed — OS-layer] **************************
+skipping: [host-a]
+
+TASK [Ask needrestart what holds replaced files — OS-layer] ********************
+skipping: [host-a]
+
+TASK [Restart the services holding replaced files — OS-layer] ******************
+skipping: [host-a]
+
+TASK [Re-execute systemd so PID 1 lets go of a replaced libc — OS-layer] *******
+[WARNING]: reset_connection task does not support when conditional
+skipping: [host-a]
+
+TASK [Drop the SSH connection so a fresh one replaces it — {{ rw_window_label }}] ***
+
+TASK [Scan again after the restarts — OS-layer] ********************************
+skipping: [host-a]
+
+TASK [Record what is still held after the restarts — OS-layer] *****************
+skipping: [host-a]
+
+TASK [Restore / to read-only — OS-layer] ***************************************
+[ERROR]: Task failed: Failed to connect to the host via ssh: mux_client_request_session: read from master failed: Broken pipe
+Failed to connect to new control master
+
+fatal: [host-a]: UNREACHABLE! => {"changed": false, "msg": "Task failed: Failed to connect to the host via ssh: mux_client_request_session: read from master failed: Broken pipe\r\nFailed to connect to new control master", "unreachable": true}
+
+PLAY RECAP *********************************************************************
+host-a                 : ok=271  changed=21   unreachable=1    failed=0    skipped=117  rescued=0    ignored=0   
+
+exit 4

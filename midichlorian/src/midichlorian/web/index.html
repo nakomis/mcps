@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>midichlorian</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <h1>midichlorian</h1>
+  <p class="sub">Playbook runs for the Jedi <span id="instance-name" class="muted"></span></p>
+</header>
+
+<div id="banner" class="banner" role="status" aria-live="polite" hidden></div>
+
+<main>
+  <section aria-labelledby="hosts-h">
+    <h2 id="hosts-h">Jedi</h2>
+    <div id="hosts" class="cards"><p class="muted">Loading…</p></div>
+  </section>
+
+  <section aria-labelledby="queue-h">
+    <h2 id="queue-h">Queue</h2>
+    <div id="queue" class="list"><p class="muted">Loading…</p></div>
+  </section>
+
+  <section id="detail" class="panel" aria-labelledby="detail-h" hidden>
+    <div class="panel-head">
+      <h2 id="detail-h">Run</h2>
+      <button type="button" id="detail-close" class="btn">Close</button>
+    </div>
+    <div id="detail-body"></div>
+  </section>
+
+  <section aria-labelledby="history-h">
+    <h2 id="history-h">History</h2>
+    <div id="history" class="list"><p class="muted">Loading…</p></div>
+  </section>
+
+  <section id="log-panel" class="panel" aria-labelledby="log-title" hidden>
+    <div class="panel-head">
+      <h2 id="log-title">Live log</h2>
+      <span id="log-status" class="muted"></span>
+      <button type="button" id="log-close" class="btn">Close</button>
+    </div>
+    <pre id="log-output" class="log" tabindex="0"></pre>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

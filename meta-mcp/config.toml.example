@@ -41,3 +41,13 @@ name = "blender"
 description = "drive Blender: scenes, objects, materials, Python"
 command = ["uvx", "mcp-for-blender==2.1.9"]
 env = {DISABLE_TELEMETRY = "true"}
+
+# midichlorian: queue and gate Ansible playbook runs on the home servers.
+# MIDICHLORIAN_INSTANCES is name=url (one instance is the normal case); several, as
+# name=url,name=url, are supported and the first is the primary.
+# CLAUDE_SESSION_NAME reaches the MCP only if exported to meta-mcp; else requester is session-<pid>.
+[[mcps]]
+name = "midichlorian"
+description = "queue and run Ansible playbooks on the home servers"
+command = ["uv", "--directory", "/path/to/mcps/midichlorian", "run", "midichlorian-mcp"]
+env = {MIDICHLORIAN_INSTANCES = "mace=http://<mace-ip>:9140", MIDICHLORIAN_TOKEN = "<api-token>"}

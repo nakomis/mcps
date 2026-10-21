@@ -1,0 +1,141 @@
+# midichlorian
+
+A playbook-run coordinator for Martin's home servers (HOME-510). Claude sessions
+ask it to run a host's Ansible playbook at a commit of `origin/main` of
+`nakomis/home-infra`; it queues the runs, applies the safety gates below, runs
+the playbooks one host at a time and tells the requesting session how each run
+ended. A small web UI shows the queue and run logs.
+
+Two entry points:
+
+| Command | Runs on | Does |
+|---|---|---|
+| `midichlorian-server` | the coordinating hosts | FastAPI service (queue, gates, playbook runner, UI) on port 9140 |
+| `midichlorian-mcp` | the Mac, via meta-mcp | stdio MCP server: `hosts`, `queue`, `runs`, `run`, `run_log`, `deploy`, `cancel` |
+
+## Architecture
+
+One server instance, on mace, serves `luke`, `leia`, `cal`, `rey`, `cere` and the
+web UI. It builds the controller-side images with mace's own Docker daemon, so the
+Docker, printer, AWS and Luke backup gates all run there.
+
+No host ever runs its own playbook, so `mace` itself is not served: it runs
+midichlorian, and is deployed by hand from the workstation. Asking the MCP to
+deploy `mace` returns an error saying so.
+
+Several instances are supported but optional (for example, a second one serving
+`mace`). They know each other as peers (`MIDICHLORIAN_PEERS`); the first instance
+listed in the MCP's `MIDICHLORIAN_INSTANCES` is the primary and merges its peers'
+reads. A `deploy` that spans instances is submitted in groups, each only after the
+previous group succeeded. In either setup, if the first host of a request fails,
+the later hosts are marked `skipped` and every requester is told.
+
+A run deploys `origin/main`'s head as it starts, unless the request named a full
+40-character sha, which is deployed exactly. Every later host of a request gets the commit its first host deployed, so a rollout is one
+commit even if main moves on meanwhile.
+
+When a run ends (or first starts waiting on a printer), the MCP pushes a message
+beginning `[midichlorian]` into the requesting Claude session, so there is no
+need to poll.
+
+## Server configuration
+
+Read by `midichlorian-server` (`config.py`, `api.py`, `runner.py`).
+
+| Variable | Required | Meaning |
+|---|---|---|
+| `MIDICHLORIAN_INSTANCE` | yes | This instance's name (for example `mace`). Must not also appear in `MIDICHLORIAN_SERVED` |
+| `MIDICHLORIAN_SERVED` | yes | Comma-separated hosts this instance runs playbooks for |
+| `MIDICHLORIAN_DATA_DIR` | yes | Directory for the SQLite database (`midichlorian.db`), the run logs (`logs/`) and each run's checkout (`worktrees/`) |
+| `MIDICHLORIAN_REPO_DIR` | yes | The server's clone of home-infra, fetched before each commit check |
+| `MIDICHLORIAN_REPO_URL` | no | Repository to clone from (default `https://github.com/nakomis/home-infra.git`) |
+| `MIDICHLORIAN_TOKEN` | yes | API bearer token (a 64-hex-character token, by convention; held in SSM) |
+| `MIDICHLORIAN_PEERS` | no | `name=url,name=url` of the other instances |
+| `MIDICHLORIAN_DRAIN_ON_SHUTDOWN` | no | `1` to wait for running playbooks on SIGTERM before exiting (for a container, where exit would kill them); see Safety rules. Default off |
+| `MIDICHLORIAN_BIND` | no | Listen address (default `0.0.0.0`) |
+| `MIDICHLORIAN_PORT` | no | Listen port (default `9140`) |
+| `MIDICHLORIAN_OCTOPRINT_KEY` | no | OctoPrint API key for the printer-busy check; if unset it is read from SSM. If neither yields a key, it is asked for again at most every 5 minutes; until then, while OctoPrint's container is running, the Prusa's state is unreadable and Leia's runs wait |
+| `MIDICHLORIAN_CTHULHU_URL` | no | Cthulhu's status endpoint for the resin printer check (default `http://rey.local:9120/api/status`). If it cannot be reached, Rey's runs are not held, so check it resolves from the coordinating host |
+| `GH_TOKEN` | no | Not read by name: the server's environment is inherited by gates and playbook runs, so a GitHub token set here is what git uses |
+| `AWS_CONFIG_FILE` | no | Not read by name: inherited by the SSM reads and playbook runs like the rest of the environment |
+
+## MCP configuration
+
+Read by `midichlorian-mcp`.
+
+| Variable | Meaning |
+|---|---|
+| `MIDICHLORIAN_INSTANCES` | `name=url` (one instance); `name=url,name=url` for several, the first being the primary |
+| `MIDICHLORIAN_TOKEN` | The API bearer token |
+| `CLAUDE_SESSION_NAME` | Optional. The requester name for deploys; if unset, `session-<pid>`. meta-mcp passes its own environment to sub-MCPs, so this is only set if Claude Code exports it to meta-mcp |
+| `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN` | Inherited from the Claude session and used to push results back into it. The token stays on the Mac and is never sent to the server or logged |
+
+An example meta-mcp entry is in `meta-mcp/config.toml.example`.
+
+## Running locally
+
+A throwaway dev instance with temporary directories:
+
+```sh
+cd midichlorian
+export MIDICHLORIAN_INSTANCE=dev MIDICHLORIAN_SERVED=luke \
+  MIDICHLORIAN_DATA_DIR=$(mktemp -d) MIDICHLORIAN_REPO_DIR=$(mktemp -d) \
+  MIDICHLORIAN_TOKEN=$(openssl rand -hex 32) MIDICHLORIAN_BIND=127.0.0.1
+uv run midichlorian-server
+```
+
+Then `curl http://127.0.0.1:9140/healthz`. Playbook runs need a real home-infra
+checkout, so a dev instance is only useful for the API, UI and queue.
+
+## Tests
+
+```sh
+cd midichlorian && uv run pytest -q
+```
+
+## Safety rules
+
+- Deploys come only from commits on `origin/main` of home-infra. The server
+  fetches before checking, so a commit newer than its clone is accepted.
+- Nothing runs against a printer-sensitive target (`rey`, `leia` and `luke`) while
+  a 3D print is in progress; the run waits. Every Luke run holds, full or tagged,
+  because many Luke tags (`volatile-fs`, `print-recordings`, Docker restarts)
+  bounce Samba and stale the print-recording mounts. The only exception is a run
+  whose tags are all in `LUKE_HOLD_FREE_TAGS` (`hosts.py`), which is empty until
+  a tag has been checked not to touch Samba, volatile-fs, print-recordings or
+  Docker. A printer that
+  cannot be reached (connection refused or timed out, ssh down, OctoPrint's
+  container not running) is treated as idle, with a note. A printer that answers
+  but whose state cannot be read (no or wrong OctoPrint key, an HTTP error, junk)
+  holds the run as if busy ("state unreadable") until it can be read or Martin
+  overrides.
+- `override_printer` bypasses that hold. A session sets it only when Martin has
+  explicitly said so in that session.
+- A running playbook is never interrupted by midichlorian. Only queued or waiting
+  runs can be cancelled. Stopping the server never signals a playbook either, but
+  whether it survives depends on how the server runs:
+  - As a plain service (for example under launchd) the playbook runs in its
+    own session, writing straight to its log, and finishes on its own. The
+    restarted server marks the run `interrupted` (check the host), keeps its
+    checkout until the process has gone, holds that host's queue until it has (the
+    waiting run says so), and carries on with the other hosts. To release a hold
+    on a hung playbook, kill the pid named in the waiting run's reason, or remove
+    `worktrees/<job id>.pid` under the data directory.
+  - As a container's main process (the mace instance) the playbook dies with the
+    container, whatever its session. Set `MIDICHLORIAN_DRAIN_ON_SHUTDOWN=1` there:
+    on SIGTERM the server stops starting jobs, cancels jobs that are still in their
+    gates (they stay queued), and waits for the running playbooks, logging which
+    ones every 30 seconds, before it exits. The API is down while it waits. The
+    supervisor's grace period (for Docker, `stop_grace_period`) must be longer
+    than the longest playbook, or the kill comes anyway.
+- With several instances, each holds a deploy of its peer's own host, which
+  restarts the peer, while the peer has a running job. An unreachable peer is not
+  waited for. A single instance has no peer to wait for.
+- A second request for a host that is already running queues behind it.
+- Run output in callback messages (log tails, task names, errors) is attacker-
+  influenced, so it is fenced in a code block labelled as untrusted data.
+
+## Deployment
+
+Hosts, services, SSM parameters and rollout are in the home-infra repo, under
+`docs/runbooks/midichlorian.md`.
