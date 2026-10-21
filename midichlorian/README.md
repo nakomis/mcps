@@ -17,8 +17,10 @@ Two entry points:
 
 Two server instances, each serving the hosts the other cannot run for:
 
-- the **Cere** instance serves `luke`, `leia`, `cal`, `mace`, `rey` and the web UI;
-- the **mace** instance serves `cere`.
+- the **mace** instance (the primary) serves `luke`, `leia`, `cal`, `rey`, `cere` and
+  the web UI. It builds the controller-side images with mace's own Docker daemon,
+  so the Docker, printer, AWS and Luke backup gates all run there;
+- the **Cere** instance serves `mace` only, and needs no Docker.
 
 No host ever runs its own playbook. The instances know each other as peers; the
 first instance listed in the MCP's `MIDICHLORIAN_INSTANCES` is the primary and
@@ -41,7 +43,7 @@ Read by `midichlorian-server` (`config.py`, `api.py`, `runner.py`).
 
 | Variable | Required | Meaning |
 |---|---|---|
-| `MIDICHLORIAN_INSTANCE` | yes | This instance's name (for example `cere`). Must not also appear in `MIDICHLORIAN_SERVED` |
+| `MIDICHLORIAN_INSTANCE` | yes | This instance's name (for example `mace`). Must not also appear in `MIDICHLORIAN_SERVED` |
 | `MIDICHLORIAN_SERVED` | yes | Comma-separated hosts this instance runs playbooks for |
 | `MIDICHLORIAN_DATA_DIR` | yes | Directory for the SQLite database (`midichlorian.db`), the run logs (`logs/`) and each run's checkout (`worktrees/`) |
 | `MIDICHLORIAN_REPO_DIR` | yes | The server's clone of home-infra, fetched before each commit check |

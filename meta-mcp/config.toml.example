@@ -49,4 +49,4 @@ env = {DISABLE_TELEMETRY = "true"}
 name = "midichlorian"
 description = "queue and run Ansible playbooks on the home servers"
 command = ["uv", "--directory", "/path/to/mcps/midichlorian", "run", "midichlorian-mcp"]
-env = {MIDICHLORIAN_INSTANCES = "cere=http://<cere-ip>:9140,mace=http://<mace-ip>:9140", MIDICHLORIAN_TOKEN = "<api-token>"}
+env = {MIDICHLORIAN_INSTANCES = "mace=http://<mace-ip>:9140,cere=http://<cere-ip>:9140", MIDICHLORIAN_TOKEN = "<api-token>"}

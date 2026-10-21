@@ -1,6 +1,6 @@
 """The HTTP API shared by the web UI and the MCP, and the server entry point.
 
-Every instance serves its own hosts. An instance with peers (Cere has mace) merges
+Every instance serves its own hosts. An instance with peers (mace has cere) merges
 the peers' GET results into its own, so the UI and the MCP see the whole estate from
 one place. Job ids are per instance; every job in a response carries `instance`, and
 `?instance=<name>` on the per-run endpoints proxies to that peer.

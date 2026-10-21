@@ -494,7 +494,7 @@ async def runs(host: str | None = None, limit: int = 20) -> dict:
 @mcp.tool()
 async def run(run_id: int, instance: str | None = None) -> dict:
     """One run's state, result, recap and checks. Run ids are per instance: pass `instance`
-    (as shown on the job) for runs that are not on the primary instance, e.g. "mace"."""
+    (as shown on the job) for runs that are not on the primary instance, e.g. "cere"."""
     return await service().run(run_id, instance)
 
 
@@ -518,7 +518,7 @@ async def deploy(
     later as a message in this session beginning "[midichlorian]", so do not poll.
 
     hosts: run in order; if one fails, later ones are skipped. Hosts on different instances
-        (cere serves luke leia cal mace rey; mace serves cere) are submitted in groups, each
+        (mace serves luke leia cal rey cere; cere serves mace) are submitted in groups, each
         only after the previous group succeeded.
     sha: "main" (the default) means origin/main's head when each run starts; or a commit
         on main. A full 40-character sha deploys exactly that commit; anything shorter
