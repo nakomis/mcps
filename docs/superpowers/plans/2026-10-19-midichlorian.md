@@ -1,9 +1,11 @@
 # midichlorian Implementation Plan
 
+> **Superseded in part (R31, 21 Oct 2026):** the topology was later swapped, so mace is the primary instance and Cere serves only mace. Read "Cere primary" below accordingly.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A playbook-run coordinator for the Jedi: an HTTP service (Cere primary, mace for Cere), a web UI at
-`midichlorian.home.nakomis.com`, and a `midichlorian` MCP, all written and tested ahead of Cere's arrival so that
+`midichlorian.<home-domain>`, and a `midichlorian` MCP, all written and tested ahead of Cere's arrival so that
 deploying it is just running playbooks.
 
 **Architecture:** One uv project in `mcps/midichlorian` with two entry points. `midichlorian-server` (FastAPI,
@@ -77,7 +79,7 @@ pytest + pytest-asyncio; Ansible; AWS CDK (TypeScript); IAM Roles Anywhere (`aws
 | `cere/ansible/tasks/midichlorian.yml`, `cere/ansible/templates/com.nakomis.midichlorian.plist.j2`, `cere/ansible/playbook.yml` | Cere instance (LaunchAgent) |
 | `mace/deployment/midichlorian/{Dockerfile,docker-compose.yml}`, `mace/ansible/playbook.yml` | mace instance (container) |
 | `shared/midichlorian/aws-config.j2`, `shared/midichlorian/ssh-config` | runner AWS profile + SSH config, used by both |
-| `leia/deployment/nginx/midichlorian.home.nakomis.com.conf`, `leia/ansible/playbook.yml` | vhost |
+| `leia/deployment/nginx/midichlorian.<home-domain>.conf`, `leia/ansible/playbook.yml` | vhost |
 | `ssh-keys/midichlorian-cere.pub`, `ssh-keys/midichlorian-mace.pub` | runner SSH identities authorised on the Jedi |
 | `docs/runbooks/midichlorian.md`, `cere/CLAUDE.md`, `mace/CLAUDE.md`, `leia/CLAUDE.md` | docs |
 
@@ -141,7 +143,7 @@ Host table (ssh targets match the inventories): luke `luke.local` ro linux docke
 **Interfaces — Produces:**
 - `remote.run(argv: list[str], timeout: float = 60, env: dict|None = None) -> RunResult(rc, stdout, stderr)`; `remote.ssh(host: HostSpec, command: str, timeout=60) -> RunResult` (`ssh -o BatchMode=yes -o ConnectTimeout=10 nakomis@<ssh> <command>`).
 - `printers.PrinterState(name: str, busy: bool, detail: str, reachable: bool)`.
-- `printers.cthulhu_state(client: httpx.AsyncClient, url="http://172.29.0.36:9120/api/status") -> PrinterState` — unreachable ⇒ `busy=False, reachable=False` (Review Focus 3); `connected` false ⇒ idle; else busy iff `print.statusLabel` not in the idle set.
+- `printers.cthulhu_state(client: httpx.AsyncClient, url="http://<rey-ip>:9120/api/status") -> PrinterState` — unreachable ⇒ `busy=False, reachable=False` (Review Focus 3); `connected` false ⇒ idle; else busy iff `print.statusLabel` not in the idle set.
 - `printers.octoprint_state(ssh, api_key: str) -> PrinterState` — on Leia: `docker inspect -f '{{.State.Running}}' gateway-octoprint-1` (not running ⇒ idle, unreachable=False); otherwise send the key on ssh **stdin** (never argv) to `read -r OCTO_KEY; export OCTO_KEY; docker exec -e OCTO_KEY gateway-octoprint-1 sh -c 'curl -s -H "X-Api-Key: $OCTO_KEY" http://localhost:5000/api/job'`. Busy iff `state` in the busy set. The server reads the key from SSM `/octoprint/api-key` once at start-up.
 - `gates.GateResult(ok: bool, wait: bool, reason: str)`.
 - `gates.check_aws(env) -> GateResult` (`aws sts get-caller-identity --profile nakom.is-admin`).
@@ -203,8 +205,8 @@ Single page, no build step, light/dark via `prefers-color-scheme`. Sections: **J
 
 **Interfaces — Produces:**
 - `notify.deliver(text: str, socket_path: str | None = None, token: str | None = None) -> bool` — reads `CLAUDE_CODE_MESSAGING_SOCKET`/`_TOKEN` from env by default; writes the two JSON lines; returns False (and logs without the token) if absent or the connect fails.
-- MCP tools (FastMCP `midichlorian`): `hosts()`, `queue()`, `runs(host: str | None = None, limit: int = 20)`, `run(run_id: int)`, `run_log(run_id: int, since: int = 0)`, `deploy(hosts: list[str], sha: str = "main", tags: list[str] | None = None, override_printer: bool = False, requester: str = "")`, `cancel(run_id: int)`. Config env: `MIDICHLORIAN_INSTANCES` (`cere=http://<ip>:9140,mace=http://172.29.0.3:9140`), `MIDICHLORIAN_TOKEN`. Routing: build host→instance map from each instance's `/api/info`; a multi-host deploy spanning instances is split per instance, preserving order (later group submitted only after the earlier group succeeds — followed by the MCP). `sha="main"` resolves to origin/main head server-side.
-- Follower: after `deploy`, a background task polls `GET /api/runs/{id}` every 10 s per job; on terminal state (or first `waiting`) calls `notify.deliver` with a one-paragraph summary: host, sha[:8], result, recap counts, failing task, log tail (≤20 lines), UI link `https://midichlorian.home.nakomis.com/#run-<id>`.
+- MCP tools (FastMCP `midichlorian`): `hosts()`, `queue()`, `runs(host: str | None = None, limit: int = 20)`, `run(run_id: int)`, `run_log(run_id: int, since: int = 0)`, `deploy(hosts: list[str], sha: str = "main", tags: list[str] | None = None, override_printer: bool = False, requester: str = "")`, `cancel(run_id: int)`. Config env: `MIDICHLORIAN_INSTANCES` (`cere=http://<ip>:9140,mace=http://<mace-ip>:9140`), `MIDICHLORIAN_TOKEN`. Routing: build host→instance map from each instance's `/api/info`; a multi-host deploy spanning instances is split per instance, preserving order (later group submitted only after the earlier group succeeds — followed by the MCP). `sha="main"` resolves to origin/main head server-side.
+- Follower: after `deploy`, a background task polls `GET /api/runs/{id}` every 10 s per job; on terminal state (or first `waiting`) calls `notify.deliver` with a one-paragraph summary: host, sha[:8], result, recap counts, failing task, log tail (≤20 lines), UI link `https://midichlorian.<home-domain>/#run-<id>`.
 
 - [ ] Tests: `deliver` against a temporary Unix socket server asserts the exact two lines and that the token never appears in log output; `deploy` routing splits hosts across two mocked instances; follower delivers once on `succeeded`.
 - [ ] Implement. Pass. Commit `feat(midichlorian): MCP tools and session callbacks (HOME-510)`.
@@ -252,7 +254,7 @@ Outputs written to SSM: `/midichlorian/<env>/role-arn`, `/midichlorian/<env>/pro
 
 **Files:** `cere/ansible/tasks/midichlorian.yml`, `cere/ansible/templates/com.nakomis.midichlorian.plist.j2`, `cere/ansible/templates/midichlorian.env.j2`, `shared/midichlorian/aws-config.j2`; modify `cere/ansible/playbook.yml` (import with `tags: [midichlorian]`, `# dr: n/a — macOS-only (launchd, brew); the stand-in is Ubuntu`), `cere_brew_formulae` += `ansible`, `flock`, `awscli`, `gh`, `age` (check which are already there).
 
-Tasks: dirs `~/midichlorian/{src,repo,data,logs}`, `~/.config/midichlorian` 0700; install `aws_signing_helper` 1.7.0 Darwin aarch64 to `~/.local/bin` (get_url + checksum); copy Cere's cert pair from SSM `/hosts/cere/mtls/{client-cert,client-key}` (controller, `no_log`) to `~/.config/midichlorian/cere.{crt,key}.pem` 0600; read `/midichlorian/<env>/{role-arn,profile-arn}` and anchor; template `~/.aws/config` profile `nakom.is-admin` with `credential_process = ~/.local/bin/aws_signing_helper credential-process --certificate … --private-key … --trust-anchor-arn … --profile-arn … --role-arn …` and `region = eu-west-2` (**only if no SSO profile already exists there** — Cere's own CI may use SSO; else write `~/.config/midichlorian/aws-config` and set `AWS_CONFIG_FILE` in the env file instead — prefer this to avoid clashing); SSH key from SSM `/midichlorian/ssh/cere` to `~/.ssh/midichlorian` 0600 + `~/.ssh/config` include of the shared config; git checkout of `nakomis/mcps` to `~/midichlorian/src` (version main) and `uv sync --frozen` in `midichlorian/`; clone home-infra to `~/midichlorian/repo`; `ansible-galaxy collection install -r` for each host's requirements; env file (0600) with `MIDICHLORIAN_INSTANCE=cere`, `_SERVED=luke,leia,cal,mace,rey`, `_TOKEN` (SSM `/midichlorian/api-token`), `_PEERS=mace=http://172.29.0.3:9140`, `GH_TOKEN` (SSM `/midichlorian/github-token`), `AWS_CONFIG_FILE`, `DOCKER_HOST=unix://~/.colima/default/docker.sock`, PATH; LaunchAgent `com.nakomis.midichlorian` (OTel idiom: bootout/bootstrap/kickstart handler) running `uv run --project ~/midichlorian/src/midichlorian midichlorian-server`; health wait `http://127.0.0.1:9140/healthz`.
+Tasks: dirs `~/midichlorian/{src,repo,data,logs}`, `~/.config/midichlorian` 0700; install `aws_signing_helper` 1.7.0 Darwin aarch64 to `~/.local/bin` (get_url + checksum); copy Cere's cert pair from SSM `/hosts/cere/mtls/{client-cert,client-key}` (controller, `no_log`) to `~/.config/midichlorian/cere.{crt,key}.pem` 0600; read `/midichlorian/<env>/{role-arn,profile-arn}` and anchor; template `~/.aws/config` profile `nakom.is-admin` with `credential_process = ~/.local/bin/aws_signing_helper credential-process --certificate … --private-key … --trust-anchor-arn … --profile-arn … --role-arn …` and `region = eu-west-2` (**only if no SSO profile already exists there** — Cere's own CI may use SSO; else write `~/.config/midichlorian/aws-config` and set `AWS_CONFIG_FILE` in the env file instead — prefer this to avoid clashing); SSH key from SSM `/midichlorian/ssh/cere` to `~/.ssh/midichlorian` 0600 + `~/.ssh/config` include of the shared config; git checkout of `nakomis/mcps` to `~/midichlorian/src` (version main) and `uv sync --frozen` in `midichlorian/`; clone home-infra to `~/midichlorian/repo`; `ansible-galaxy collection install -r` for each host's requirements; env file (0600) with `MIDICHLORIAN_INSTANCE=cere`, `_SERVED=luke,leia,cal,mace,rey`, `_TOKEN` (SSM `/midichlorian/api-token`), `_PEERS=mace=http://<mace-ip>:9140`, `GH_TOKEN` (SSM `/midichlorian/github-token`), `AWS_CONFIG_FILE`, `DOCKER_HOST=unix://~/.colima/default/docker.sock`, PATH; LaunchAgent `com.nakomis.midichlorian` (OTel idiom: bootout/bootstrap/kickstart handler) running `uv run --project ~/midichlorian/src/midichlorian midichlorian-server`; health wait `http://127.0.0.1:9140/healthz`.
 Note in `cere/CLAUDE.md`: the first launch from launchd needs the macOS Local Network permission dialog clicked on Cere's screen.
 
 - [ ] dr-check 0 MISSING; `ansible-playbook --syntax-check` and `--list-tasks --tags midichlorian`. Commit `feat(cere): midichlorian runner as a LaunchAgent (HOME-510)`.
@@ -261,17 +263,17 @@ Note in `cere/CLAUDE.md`: the first launch from launchd needs the macOS Local Ne
 
 **Files:** `mace/deployment/midichlorian/Dockerfile`, `mace/deployment/midichlorian/docker-compose.yml`; modify `mace/ansible/playbook.yml` (block `tags: [midichlorian]`, `when: not dr_ec2`, screeneye-style build from the controller's mcps checkout).
 
-Image: `docker.home.nakomis.com/library/python:3.13-slim` base, `apt-get install openssh-client git curl unzip ca-certificates`, AWS CLI v2 (x86_64 installer, checksum-pinned), `aws_signing_helper` 1.7.0 Linux x86_64 (checksum from `cal/ansible/playbook.yml:295-306`), `gh` (Debian package from GitHub's apt repo), `pip install ansible-core==2.19.*` + collections from `cere/ansible/requirements.yml`, `uv` + the midichlorian package. Compose: bridge network with `ports: "172.29.0.3:9140:9140"`, volumes `/mnt/data/midichlorian/{data,repo}`, `/mnt/data/midichlorian/secrets` (ro) holding `mace.{crt,key}.pem`, `ssh_key`, `aws-config`; env from `.env` (0600, rendered from SSM: token, GH token, peers empty, served `cere`, instance `mace`). `flock` is in util-linux (Debian base has it). Health wait `http://172.29.0.3:9140/healthz`. Handler `Restart midichlorian`. `# dr: n/a — the stand-in does not coordinate deploys` on the block.
+Image: `<registry-host>/library/python:3.13-slim` base, `apt-get install openssh-client git curl unzip ca-certificates`, AWS CLI v2 (x86_64 installer, checksum-pinned), `aws_signing_helper` 1.7.0 Linux x86_64 (checksum from `cal/ansible/playbook.yml:295-306`), `gh` (Debian package from GitHub's apt repo), `pip install ansible-core==2.19.*` + collections from `cere/ansible/requirements.yml`, `uv` + the midichlorian package. Compose: bridge network with `ports: "<mace-ip>:9140:9140"`, volumes `/mnt/data/midichlorian/{data,repo}`, `/mnt/data/midichlorian/secrets` (ro) holding `mace.{crt,key}.pem`, `ssh_key`, `aws-config`; env from `.env` (0600, rendered from SSM: token, GH token, peers empty, served `cere`, instance `mace`). `flock` is in util-linux (Debian base has it). Health wait `http://<mace-ip>:9140/healthz`. Handler `Restart midichlorian`. `# dr: n/a — the stand-in does not coordinate deploys` on the block.
 
 - [ ] dr-check, `--list-tasks --tags midichlorian`, `docker build` locally on phi (`--platform linux/amd64`). Commit `feat(mace): midichlorian runner for Cere's playbook (HOME-510)`.
 
 ### Task B6: Leia vhost
 
-**Files:** `leia/deployment/nginx/midichlorian.home.nakomis.com.conf` (templated); modify `leia/ansible/playbook.yml` (`nginx_vhosts` + `nginx_templated_vhosts`, var `midichlorian_upstream: "{{ cere_lan_ip }}:9140"`, bespoke task injecting `X-Midichlorian-Token` from SSM like BAU's proxy token, 0600, `no_log`), `docs/runbooks/ec2-dr/leia.md` list.
+**Files:** `leia/deployment/nginx/midichlorian.<home-domain>.conf` (templated); modify `leia/ansible/playbook.yml` (`nginx_vhosts` + `nginx_templated_vhosts`, var `midichlorian_upstream: "{{ cere_lan_ip }}:9140"`, bespoke task injecting `X-Midichlorian-Token` from SSM like BAU's proxy token, 0600, `no_log`), `docs/runbooks/ec2-dr/leia.md` list.
 
-Copy `bau.home.nakomis.com.conf`: mTLS optional + `if ($ssl_client_verify != SUCCESS) return 401`, `{% if cere_lan_ip == 'unset' %}` placeholder 503; for `/api/runs/*/log` add `proxy_buffering off; proxy_read_timeout 3600s;` (SSE).
+Copy `bau.<home-domain>.conf`: mTLS optional + `if ($ssl_client_verify != SUCCESS) return 401`, `{% if cere_lan_ip == 'unset' %}` placeholder 503; for `/api/runs/*/log` add `proxy_buffering off; proxy_read_timeout 3600s;` (SSE).
 
-- [ ] dr-check, `--list-tasks`. Commit `feat(leia): midichlorian.home.nakomis.com vhost (HOME-510)`.
+- [ ] dr-check, `--list-tasks`. Commit `feat(leia): midichlorian.<home-domain> vhost (HOME-510)`.
 
 ### Task B7: Docs and meta-mcp
 

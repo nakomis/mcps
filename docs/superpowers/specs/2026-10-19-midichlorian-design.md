@@ -1,5 +1,7 @@
 # midichlorian: a playbook-run coordinator for the Jedi
 
+> **Superseded in part (R31, 21 Oct 2026):** the topology was later swapped, so mace is the primary instance and Cere serves only mace. Read "Cere primary" below accordingly.
+
 **Plane:** HOME-510 · **Date:** 19 Oct 2026 · **Status:** design agreed with Martin, awaiting spec review
 
 ## Why
@@ -26,7 +28,7 @@ and tells the requesting session when it is done.
 3. Runs never disturb a 3D print or its recording unless Martin explicitly authorises it for that request.
 4. Every run deploys merged code from `origin/main`, never someone's working checkout.
 5. Martin can see the queue, rollout history, the state of each Jedi, and live logs at
-   `https://midichlorian.home.nakomis.com`.
+   `https://midichlorian.<home-domain>`.
 
 ## Non-goals
 
@@ -80,7 +82,7 @@ and tells the requesting session when it is done.
    - a GitHub token from SSM, for Cere's playbook's `gh` task;
    - SSH access to the hosts it serves, and the host-specific helpers the deploy scripts already expect.
 4. **Infrastructure** (in `nakomis/home-infra`): the Roles Anywhere roles and trust (CDK), the Cere and mace
-   Ansible tasks that install the server, and Leia's `midichlorian.home.nakomis.com` mTLS vhost pointing at Cere.
+   Ansible tasks that install the server, and Leia's `midichlorian.<home-domain>` mTLS vhost pointing at Cere.
 
 Code lives in `mcps/midichlorian/`: one uv project (hatchling), two entry points (`midichlorian-server`,
 `midichlorian-mcp`), pytest, matching the other MCPs in the repo.
@@ -153,7 +155,7 @@ messaging token must not leave it.
 - A result lands as a cross-session message, not user input; the receiving session treats it as a teammate's
   report. If the session has gone, the result stays in the history.
 
-## Web UI: `midichlorian.home.nakomis.com`
+## Web UI: `midichlorian.<home-domain>`
 
 A single static page (plain JavaScript, no build step) served by the Cere instance, behind Leia's nginx with the
 usual mTLS client-certificate check.
