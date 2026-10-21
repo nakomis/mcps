@@ -100,6 +100,7 @@ class Coordinator:
         self._recheck_at: dict[int, datetime] = {}
         self._ready = False
         self._draining = False
+        self._orphan_ids: set[int] = set()  # interrupted jobs whose playbook was alive at start-up
         self.interrupted = store.recover_interrupted()
         for job_id in self.interrupted:
             job = store.get_job(job_id)
@@ -162,8 +163,11 @@ class Coordinator:
                             path.unlink(missing_ok=True)
                         continue
                     pids = pid_file(path)
-                    if pid_alive(pids):  # a playbook from before the restart, still going
+                    if await asyncio.to_thread(pid_alive, pids, path):
+                        # a playbook from before the restart, still going
                         logger.warning("leaving %s: its playbook is still running", path)
+                        if path.name.isdigit():
+                            self._orphan_ids.add(int(path.name))
                         continue
                     pids.unlink(missing_ok=True)
                     await self.git.remove_worktree(self._repo, path)
@@ -392,7 +396,7 @@ class Coordinator:
             self._finish(job, "skipped", reason)
         busy = {host for host, _ in self._inflight.values()}
         now = self.clock()
-        orphans = self._orphaned_hosts()
+        orphans = await self._orphaned_hosts()
         for job in runnable:
             if job.host in busy:
                 continue
@@ -407,22 +411,27 @@ class Coordinator:
                 asyncio.create_task(self._process(job.id)),
             )
 
-    def _orphaned_hosts(self) -> dict[str, int]:
+    async def _orphaned_hosts(self) -> dict[str, int]:
         """Hosts where an interrupted job's playbook is still running: host -> pid.
 
         A restart leaves such a playbook going (R27); a new run beside it would be
-        two playbooks on one host (on Luke, inside the rw window).
+        two playbooks on one host (on Luke, inside the rw window). Only the playbooks
+        found alive at start-up are watched (each pass), not every interrupted job
+        ever recorded, and the process check runs off the event loop.
         """
         found: dict[str, int] = {}
         trees = self.settings.data_dir / "worktrees"
-        for job in self.store.jobs(states=["interrupted"], limit=100_000):
-            pids = pid_file(trees / str(job.id))
-            if not pids.exists():
-                continue
-            if pid_alive(pids):
-                found.setdefault(job.host, read_pid(pids))
-            else:
-                pids.unlink(missing_ok=True)
+        for job_id in sorted(self._orphan_ids):
+            job = self.store.get_job(job_id)
+            tree = trees / str(job_id)
+            pids = pid_file(tree)
+            if job is not None and await asyncio.to_thread(pid_alive, pids, tree):
+                pid = read_pid(pids)
+                if pid is not None:
+                    found.setdefault(job.host, pid)
+                    continue
+            self._orphan_ids.discard(job_id)
+            pids.unlink(missing_ok=True)
         return found
 
     def _hold_for_orphan(self, job, pid: int) -> None:
@@ -540,8 +549,6 @@ class Coordinator:
             )
 
         if pin and (newer := await self._newer_deploy(job.host, pin, job.tags)):
-            # An unpinned job deploys origin/main's head, which is never older than
-            # a recorded deploy; only a pinned one can go backwards.
             return self._end_pending(
                 job_id,
                 "skipped",

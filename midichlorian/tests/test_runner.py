@@ -3,6 +3,8 @@ import contextlib
 import os
 from pathlib import Path
 
+import pytest
+
 from midichlorian import runner
 from midichlorian.hosts import HOSTS
 
@@ -194,4 +196,27 @@ def test_pid_alive_asks_the_command_line(tmp_path):
     pids.write_text(f"{os.getpid()}\n")
     assert "python" in runner_module._command_of(os.getpid()).lower()
     assert runner_module.pid_alive(pids) is False  # pytest is not an ansible wrapper
+    assert runner_module.pid_alive(pids, tmp_path / "1") is False  # nor this run's wrapper
     assert runner_module._command_of(999999999) == ""
+
+
+def test_command_of_reads_proc_without_ps(monkeypatch):
+    from midichlorian import runner as runner_module
+
+    if not Path("/proc/self/cmdline").exists():
+        pytest.skip("no /proc here")
+
+    def no_ps(*a, **k):
+        raise FileNotFoundError("ps")
+
+    monkeypatch.setattr(runner_module.subprocess, "run", no_ps)
+    assert "python" in runner_module._command_of(os.getpid()).lower()
+    assert runner_module._command_of(999999999) == ""
+
+
+def test_command_of_falls_back_to_ps_off_linux(monkeypatch):
+    from midichlorian import runner as runner_module
+
+    real_exists = Path.exists
+    monkeypatch.setattr(Path, "exists", lambda self: False if str(self) == "/proc/self" else real_exists(self))
+    assert "python" in runner_module._command_of(os.getpid()).lower()

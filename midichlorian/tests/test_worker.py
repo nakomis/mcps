@@ -1039,7 +1039,9 @@ async def test_restart_keeps_a_live_playbooks_worktree(w, monkeypatch):
     dead.mkdir()
     (trees / f"{alive.id}.pid").write_text(f"{os.getpid()}\n")  # a process that exists
     (trees / "999.pid").write_text("999999999\n")  # one that does not
-    monkeypatch.setattr(runner_module, "_command_of", lambda pid: "bash scripts/leia-ansible.sh")
+    monkeypatch.setattr(
+        runner_module, "_command_of", lambda pid: f"bash {live}/scripts/leia-ansible.sh"
+    )
 
     c = w.coordinator()
     assert "may still be running" in w.job(alive.id).detail["reason"]
@@ -1063,8 +1065,11 @@ def _orphan(w, host="luke", pid=None):
 
 
 async def test_interrupted_job_with_a_live_playbook_holds_its_host(w, monkeypatch):
-    monkeypatch.setattr(runner_module, "_command_of", lambda pid: "bash scripts/luke-ansible.sh")
     old = _orphan(w)
+    own = w.settings.data_dir / "worktrees" / str(old.id)
+    monkeypatch.setattr(
+        runner_module, "_command_of", lambda pid: f"bash {own}/scripts/luke-ansible.sh"
+    )
     c = w.coordinator()
     job_id = (await c.submit(["luke"], "c", None, False, "s")).jobs[0]["job_id"]
     other = (await c.submit(["cal"], "c", None, False, "s")).jobs[0]["job_id"]
@@ -1168,6 +1173,68 @@ async def test_continuation_pinned_older_than_a_tagged_deploy_is_skipped(w):
     await settle(c)
     assert w.job(res.jobs[0]["job_id"]).state == "succeeded"
     assert w.job(res.jobs[1]["job_id"]).state == "skipped"
+
+
+async def test_a_playbook_of_another_run_does_not_hold(w, monkeypatch):
+    """Ansible's ssh helpers, a hand-run script or another run's wrapper are not it."""
+    old = _orphan(w)
+    other = w.settings.data_dir / "worktrees" / str(old.id + 1)
+    monkeypatch.setattr(
+        runner_module, "_command_of", lambda pid: f"bash {other}/scripts/luke-ansible.sh"
+    )
+    c = w.coordinator()
+    job_id = (await c.submit(["luke"], "c", None, False, "s")).jobs[0]["job_id"]
+    await settle(c)
+    assert w.job(job_id).state == "succeeded"
+
+
+async def test_only_playbooks_alive_at_start_up_are_watched(w, monkeypatch):
+    calls = []
+    real = runner_module.pid_alive
+
+    def counting(path, worktree=None):
+        calls.append(path)
+        return real(path, worktree)
+
+    monkeypatch.setattr("midichlorian.worker.pid_alive", counting)
+    for _ in range(5):  # old interrupted jobs without a pid file
+        _orphan(w, pid=999999999)
+    c = w.coordinator()
+    await settle(c, rounds=4)
+    assert len(calls) == 5  # once each at start-up; never again per tick
+
+
+def test_pid_alive_trusts_a_live_pid_when_the_command_line_cannot_be_read(tmp_path, monkeypatch):
+    pids = tmp_path / "1.pid"
+    pids.write_text(f"{os.getpid()}\n")
+    monkeypatch.setattr(runner_module, "_command_of", lambda pid: None)
+    assert runner_module.pid_alive(pids, tmp_path / "1") is True
+
+
+def test_pid_alive_treats_another_users_process_by_its_command_line(tmp_path, monkeypatch):
+    pids = tmp_path / "1.pid"
+    pids.write_text("4242\n")
+
+    def denied(pid, sig):
+        raise PermissionError
+
+    monkeypatch.setattr(os, "kill", denied)
+    tree = tmp_path / "1"
+    monkeypatch.setattr(runner_module, "_command_of", lambda pid: f"sh {tree}/scripts/x-ansible.sh")
+    assert runner_module.pid_alive(pids, tree) is True
+    monkeypatch.setattr(runner_module, "_command_of", lambda pid: "launchd")
+    assert runner_module.pid_alive(pids, tree) is False
+
+
+async def test_pinned_job_at_the_sha_of_a_non_covering_record_runs(w):
+    """A tagged record at the very sha is not "newer": the full run goes ahead."""
+    _abc(w)
+    w.store.record_deploy("cal", B, ["x"], "2026-10-19T09:00:00Z")
+    c = w.coordinator()
+    res = await c.submit(["cal"], B, None, False, "s")
+    assert states(res) == ["queued"]
+    await settle(c)
+    assert w.job(res.jobs[0]["job_id"]).state == "succeeded"
 
 
 # --- draining on shutdown (container mode) ---------------------------------------------------

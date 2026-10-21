@@ -79,7 +79,20 @@ def read_pid(path: Path) -> int | None:
 
 def _command_of(pid: int) -> str | None:
     """The command line of `pid` ("" if there is no such process), or None if it
-    cannot be asked (no `ps`)."""
+    cannot be asked.
+
+    On Linux that is /proc/<pid>/cmdline (a container has no `ps`); elsewhere, `ps`.
+    """
+    proc = Path("/proc")
+    if (proc / "self").exists():
+        try:
+            raw = (proc / str(pid) / "cmdline").read_bytes()
+        except (FileNotFoundError, ProcessLookupError):
+            return ""
+        except OSError:
+            pass  # unreadable: try ps
+        else:
+            return raw.replace(b"\0", b" ").decode(errors="replace").strip()
     try:
         done = subprocess.run(
             ["ps", "-o", "command=", "-p", str(pid)],
@@ -93,13 +106,15 @@ def _command_of(pid: int) -> str | None:
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
-def pid_alive(path: Path) -> bool:
-    """Whether the pid recorded in `path` is a live playbook process.
+def pid_alive(path: Path, worktree: Path | None = None) -> bool:
+    """Whether the pid recorded in `path` is the live playbook of `worktree`.
 
     A pid the system has since handed to something else (a reboot, a fresh
-    container) is not: the command line must still mention ansible (the wrapper
-    scripts are `<host>-ansible.sh`, which run ansible-playbook). If the command
-    line cannot be read at all, a live pid is trusted.
+    container) is not: the process's command line must still name the run's own
+    worktree (the wrapper is started as `<worktree>/scripts/<host>-ansible.sh`), so
+    neither another run's playbook, ansible's ssh helpers nor a hand-run script
+    count. Without a worktree, any command mentioning ansible will do. If the
+    command line cannot be read at all, a live pid is trusted.
     """
     pid = read_pid(path)
     if pid is None or pid <= 0:
@@ -113,7 +128,11 @@ def pid_alive(path: Path) -> bool:
     except OSError:
         return False
     command = _command_of(pid)
-    return command is None or "ansible" in command.lower()
+    if command is None:
+        return True
+    if worktree is not None:
+        return f"{worktree}/" in command
+    return "ansible" in command.lower()
 
 
 class AnsibleRunner:
