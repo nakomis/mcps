@@ -58,13 +58,31 @@ async def test_cthulhu_junk_or_http_error_from_a_reachable_server_holds():
         assert s.detail.startswith("Cthulhu state unreadable: ")
 
 
-async def test_cthulhu_timeout_is_idle_and_unreachable():
-    def slow(req):
-        raise httpx.ReadTimeout("slow")
+async def test_cthulhu_connect_failures_are_idle_and_unreachable():
+    for exc in (httpx.ConnectTimeout("slow"), httpx.ConnectError("refused")):
 
-    async with client(slow) as c:
-        s = await cthulhu_state(c)
-    assert not s.busy and not s.reachable
+        def down(req, exc=exc):
+            raise exc
+
+        async with client(down) as c:
+            s = await cthulhu_state(c)
+        assert not s.busy and not s.reachable
+
+
+async def test_cthulhu_error_after_connecting_holds():
+    for exc in (
+        httpx.ReadTimeout("hung"),
+        httpx.ReadError("reset"),
+        httpx.RemoteProtocolError("junk"),
+    ):
+
+        def broken(req, exc=exc):
+            raise exc
+
+        async with client(broken) as c:
+            s = await cthulhu_state(c)
+        assert s.busy and s.reachable
+        assert s.detail == f"Cthulhu state unreadable: {type(exc).__name__}"
 
 
 async def test_cthulhu_url_is_passed_through():
@@ -229,6 +247,39 @@ async def test_probes_resolve_a_missing_key_lazily_at_most_every_five_minutes():
         await probes.states()  # a key in hand is never re-resolved
         assert len(resolver.calls) == 3
     assert log[-1][1] == b"late\n"
+
+
+async def test_probes_re_resolve_a_rejected_key_at_most_every_five_minutes():
+    resolver = key_resolver("old", "old", "new")
+    clock = Clock()
+    log = []
+    wrong = '{"error": "Invalid API key"}'
+
+    async def ssh(host, command, timeout=60, stdin=None):
+        log.append(stdin)
+        if "docker inspect" in command:
+            return remote.RunResult(0, "true\n", "")
+        body = '{"state": "Operational"}' if stdin == b"new\n" else wrong
+        return remote.RunResult(0, body, "")
+
+    async with client(status("Idle")) as c:
+        probes = Probes(c, LEIA, ssh, resolver, clock=clock)
+        first = (await probes.states())[1]
+        assert first.busy and "wrong API key" in first.detail
+        assert len(resolver.calls) == 1
+        clock.now += 60
+        assert (await probes.states())[1].busy  # rejected, but too soon to ask again
+        assert len(resolver.calls) == 1
+        clock.now += 240
+        assert (await probes.states())[1].busy  # asks: the same key still comes back
+        assert len(resolver.calls) == 2
+        clock.now += 300
+        later = (await probes.states())[1]  # asks again: the key was rotated
+        assert len(resolver.calls) == 3
+        assert not later.busy and later.detail == "Prusa: Operational"
+        clock.now += 3600
+        await probes.states()  # a key that works is left alone
+        assert len(resolver.calls) == 3
 
 
 async def test_probes_resolver_error_counts_as_no_key():

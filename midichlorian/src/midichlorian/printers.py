@@ -42,6 +42,7 @@ class PrinterState:
     busy: bool
     detail: str
     reachable: bool
+    key_rejected: bool = False  # OctoPrint answered but not to this API key
 
 
 async def cthulhu_state(
@@ -52,7 +53,9 @@ async def cthulhu_state(
 
     try:
         resp = await client.get(url, timeout=10)
-    except httpx.TransportError as exc:  # refused, timed out, no route: nothing to disturb
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        # Nothing accepted the connection (refused, no route, no DNS, no answer):
+        # nothing to disturb. Anything that fails after connecting is unreadable.
         return PrinterState("cthulhu", False, f"Cthulhu unreachable ({type(exc).__name__})", False)
     except httpx.HTTPError as exc:
         return unreadable(type(exc).__name__)
@@ -88,8 +91,10 @@ async def octoprint_state(ssh, host: HostSpec, api_key: str | None) -> PrinterSt
     def unreachable(why: str) -> PrinterState:
         return PrinterState("octoprint", False, f"OctoPrint unreachable ({why})", False)
 
-    def unreadable(why: str) -> PrinterState:
-        return PrinterState("octoprint", True, f"OctoPrint state unreadable: {why}", True)
+    def unreadable(why: str, rejected: bool = False) -> PrinterState:
+        return PrinterState(
+            "octoprint", True, f"OctoPrint state unreadable: {why}", True, rejected
+        )
 
     running = await ssh(
         host, f"docker inspect -f '{{{{.State.Running}}}}' {OCTOPRINT_CONTAINER}", timeout=30
@@ -116,7 +121,7 @@ async def octoprint_state(ssh, host: HostSpec, api_key: str | None) -> PrinterSt
         return unreadable("unparsable response")
     state = data.get("state") if isinstance(data, dict) else None
     if not isinstance(state, str):  # a 401/403 body has no state
-        return unreadable("no state in the response (wrong API key?)")
+        return unreadable("no state in the response (wrong API key?)", rejected=True)
     if state in OCTOPRINT_BUSY:
         return PrinterState("octoprint", True, f"Prusa: {state}", True)
     return PrinterState("octoprint", False, f"Prusa: {state}", True)
@@ -126,8 +131,9 @@ class Probes:
     """Injectable bundle of the printer probes the gates consult.
 
     `key_resolver` is an async callable returning the OctoPrint API key or None. It is
-    called on first use and, while the key is missing, again at most every
-    KEY_RETRY_SECONDS, so a key that was unavailable at start-up is picked up later.
+    called on first use and, while the key is missing or OctoPrint has rejected it
+    (rotated), again at most every KEY_RETRY_SECONDS, so a key that was unavailable
+    at start-up, or has since changed, is picked up later.
     """
 
     def __init__(
@@ -148,21 +154,29 @@ class Probes:
         self._clock = clock
         self._key: str | None = None
         self._asked_at: float | None = None
+        self._rejected = False  # OctoPrint refused the key in hand
 
     async def _api_key(self) -> str | None:
         now = self._clock()
-        if self._key is None and (
+        if (self._key is None or self._rejected) and (
             self._asked_at is None or now - self._asked_at >= KEY_RETRY_SECONDS
         ):
             self._asked_at = now
             try:
-                self._key = await self._resolve() or None
+                fresh = await self._resolve() or None
             except Exception as exc:  # noqa: BLE001 — no key just means "unreadable"
                 logger.warning("OctoPrint key resolution failed (%s)", type(exc).__name__)
+            else:
+                if fresh is not None and fresh != self._key:
+                    self._key, self._rejected = fresh, False
+                elif self._key is None:
+                    self._key = fresh
         return self._key
 
     async def states(self) -> list[PrinterState]:
-        return [
-            await cthulhu_state(self._client, self._cthulhu_url),
-            await octoprint_state(self._ssh, self._leia, await self._api_key()),
-        ]
+        cthulhu = await cthulhu_state(self._client, self._cthulhu_url)
+        octoprint = await octoprint_state(self._ssh, self._leia, await self._api_key())
+        # A key that worked and now does not has probably been rotated; one that
+        # answered is good again.
+        self._rejected = octoprint.key_rejected
+        return [cthulhu, octoprint]
