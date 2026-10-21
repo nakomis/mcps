@@ -28,11 +28,12 @@ struct ContentView: View {
 
     // MARK: Choosing the phone
 
-    /// What to connect to, as an identity for `.task(id:)`.
+    /// What to connect to, as an identity for `.task(id:)`: the typed address, a phone picked
+    /// by name, or (first found) every phone listed, so a change to the list starts over.
     private var target: String {
         if chosen == manualChoice || (chosen == nil && finder.phones.isEmpty) { return "url:" + manualURL }
-        let name = chosen.flatMap { c in finder.phones.first { $0.name == c }?.name } ?? finder.phones.first?.name
-        return name.map { "bonjour:" + $0 } ?? "url:" + manualURL
+        if let c = chosen, finder.phones.contains(where: { $0.name == c }) { return "bonjour:" + c }
+        return "auto:" + finder.phones.map(\.name).joined(separator: "\n")
     }
 
     private func connect() async {
@@ -41,22 +42,50 @@ struct ContentView: View {
             let name = String(t.dropFirst("bonjour:".count))
             guard let phone = finder.phones.first(where: { $0.name == name }) else { return }
             // Keep trying: the phone may be asleep, or the Local Network prompt not yet answered.
-            while !Task.isCancelled {
-                do {
-                    let url = try await PhoneFinder.resolve(phone.endpoint)
-                    guard !Task.isCancelled else { return }
-                    viewer.connect(to: PhoneAPI(base: url), name: phone.name)
-                    return
-                } catch {
-                    guard !Task.isCancelled else { return }
-                    viewer.connect(to: nil, name: phone.name, problem: "Found \(phone.name), but couldn't connect to it. "
-                                   + "Is Local Network access allowed for ScreenEye (System Settings → Privacy & Security)? Retrying…")
-                    try? await Task.sleep(for: .seconds(3))
-                }
+            while !Task.isCancelled, !(await attach(phone)) {
+                try? await Task.sleep(for: .seconds(3))
             }
+        } else if t.hasPrefix("auto:") {
+            await firstFound()
         } else {
             let api = PhoneAPI.base(from: manualURL).map(PhoneAPI.init)
             viewer.connect(to: api, name: api?.base.host() ?? "")
+        }
+    }
+
+    /// First found: shows a phone that answers. The one showing now is kept if it's still
+    /// listed; when the one showing stops sending frames and another is listed, moves on to the
+    /// next, round the list.
+    private func firstFound() async {
+        let names = PhoneChoice.order(finder.phones.map(\.name), current: viewer.phoneName)
+        var i = 0
+        while !Task.isCancelled, !names.isEmpty {
+            let name = names[i % names.count]
+            i += 1
+            guard let phone = finder.phones.first(where: { $0.name == name }) else { continue }
+            if await attach(phone) {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(1))
+                    if PhoneChoice.shouldMoveOn(silentFor: viewer.silentFor, phones: names.count) { break }
+                }
+            } else if names.count == 1 {
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
+    }
+
+    /// Resolves a phone and shows it; false (with the reason shown) if it couldn't be reached.
+    private func attach(_ phone: PhoneFinder.Phone) async -> Bool {
+        do {
+            let url = try await PhoneFinder.resolve(phone.endpoint)
+            guard !Task.isCancelled else { return false }
+            viewer.connect(to: PhoneAPI(base: url), name: phone.name)
+            return true
+        } catch {
+            guard !Task.isCancelled else { return false }
+            viewer.connect(to: nil, name: phone.name, problem: "Found \(phone.name), but couldn't connect to it. "
+                           + "Is Local Network access allowed for ScreenEye (System Settings → Privacy & Security)? Retrying…")
+            return false
         }
     }
 

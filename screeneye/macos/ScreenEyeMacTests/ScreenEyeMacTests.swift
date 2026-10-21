@@ -61,6 +61,20 @@ final class PhoneStatusTests: XCTestCase {
     }
 }
 
+final class PhoneChoiceTests: XCTestCase {
+    func testTheOneShowingIsTriedFirst() {
+        XCTAssertEqual(PhoneChoice.order(["iPad", "iPhone", "Old"], current: "iPhone"), ["iPhone", "Old", "iPad"])
+        XCTAssertEqual(PhoneChoice.order(["iPad", "iPhone"], current: "Gone"), ["iPad", "iPhone"])
+        XCTAssertEqual(PhoneChoice.order([], current: "iPhone"), [])
+    }
+
+    func testMovesOnOnlyWhenQuietAndThereIsAnother() {
+        XCTAssertTrue(PhoneChoice.shouldMoveOn(silentFor: 6, phones: 2))
+        XCTAssertFalse(PhoneChoice.shouldMoveOn(silentFor: 5.9, phones: 2))
+        XCTAssertFalse(PhoneChoice.shouldMoveOn(silentFor: 60, phones: 1))  // nowhere to go: keep retrying
+    }
+}
+
 final class PictureMathTests: XCTestCase {
     func testFitted() {
         // A landscape picture in a taller view: full width, centred vertically.

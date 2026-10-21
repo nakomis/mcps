@@ -70,6 +70,15 @@ final class Viewer {
     /// Bumped by each change, so frames fetched before it don't clear the drag offset.
     private var generation = 0
     private var frameTimes: [Date] = []
+    /// When the phone was connected to, and when it last sent a frame.
+    private var connectedAt = Date()
+    private var lastFrameAt: Date?
+
+    /// How long the phone has gone without sending a frame (0 while paused or with no phone).
+    var silentFor: TimeInterval {
+        guard api != nil, !paused else { return 0 }
+        return Date().timeIntervalSince(lastFrameAt ?? connectedAt)
+    }
     private var lastOverview = Date.distantPast
 
     // MARK: Connecting
@@ -84,6 +93,8 @@ final class Viewer {
         overview = nil
         status = nil
         framesPerSecond = 0
+        connectedAt = Date()
+        lastFrameAt = nil
         self.problem = api == nil ? problem ?? ViewerError.noPhone.localizedDescription : nil
         guard let api else { return }
         loop = Task { [weak self] in await self?.run(api) }
@@ -94,6 +105,7 @@ final class Viewer {
         var lastStatus = Date()
         while !Task.isCancelled {
             if paused {
+                lastFrameAt = Date()  // a pause isn't the phone going quiet
                 try? await Task.sleep(for: .milliseconds(250))
                 continue
             }
@@ -103,6 +115,7 @@ final class Viewer {
                 guard !Task.isCancelled else { return }
                 guard let img = NSImage(data: data) else { throw ViewerError.notAnImage }
                 frame = img
+                lastFrameAt = Date()
                 problem = nil
                 if started == generation && !sending && pending.isEmpty { dragOffset = .zero }
                 countFrame()
