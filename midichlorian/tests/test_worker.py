@@ -1099,6 +1099,77 @@ async def test_reused_pid_with_another_command_does_not_hold(w, monkeypatch):
     assert w.job(job_id).state == "succeeded"
 
 
+# --- a pinned run never goes backwards (Residual 7) -----------------------------------------
+
+
+def _abc(w):
+    w.git = FakeGit(history=(A, B, C))
+    w.runner.git = w.git
+
+
+async def test_pinned_older_than_a_tagged_deploy_is_skipped(w):
+    _abc(w)
+    w.store.record_deploy("cal", C, ["x"], "2026-10-19T09:00:00Z")
+    c = w.coordinator()
+    res = await c.submit(["cal"], B, None, False, "s")  # a full run at B would revert x
+    assert states(res) == ["queued"]
+    await settle(c)
+    job = w.job(res.jobs[0]["job_id"])
+    assert job.state == "skipped"
+    assert C in job.detail["reason"] and "newer" in job.detail["reason"]
+    assert w.runner.calls == []
+    assert w.store.deployed("cal")["tagged"] == [
+        {"sha": C, "tags": ["x"], "at": "2026-10-19T09:00:00Z"}
+    ]
+    assert w.store.deployed("cal")["full"] is None
+
+
+async def test_skipped_pinned_job_skips_the_later_hosts(w):
+    _abc(w)
+    w.store.record_deploy("cal", C, ["x"], "2026-10-19T09:00:00Z")
+    c = w.coordinator()
+    res = await c.submit(["cal", "leia"], B, None, False, "s")
+    await settle(c)
+    assert [w.job(j["job_id"]).state for j in res.jobs] == ["skipped", "skipped"]
+    assert w.runner.calls == []
+
+
+async def test_pinned_at_the_deployed_sha_is_already(w):
+    _abc(w)
+    w.store.record_deploy("cal", B, ["x"], "2026-10-19T09:00:00Z")
+    c = w.coordinator()
+    assert states(await c.submit(["cal"], B, ["x"], False, "s")) == ["already"]
+
+
+async def test_pinned_newer_than_the_tagged_deploy_runs(w):
+    _abc(w)
+    w.store.record_deploy("cal", A, ["x"], "2026-10-19T09:00:00Z")
+    c = w.coordinator()
+    res = await c.submit(["cal"], B, None, False, "s")
+    await settle(c)
+    assert w.job(res.jobs[0]["job_id"]).state == "succeeded"
+    assert w.runner.calls[-1]["sha"] == B
+
+
+async def test_pinned_older_with_disjoint_tags_runs(w):
+    _abc(w)
+    w.store.record_deploy("cal", C, ["x"], "2026-10-19T09:00:00Z")
+    c = w.coordinator()
+    res = await c.submit(["cal"], B, ["z"], False, "s")
+    await settle(c)
+    assert w.job(res.jobs[0]["job_id"]).state == "succeeded"
+
+
+async def test_continuation_pinned_older_than_a_tagged_deploy_is_skipped(w):
+    _abc(w)
+    w.store.record_deploy("leia", C, ["x"], "2026-10-19T09:00:00Z")
+    c = w.coordinator()
+    res = await c.submit(["cal", "leia"], B, None, False, "s")  # explicit sha: pinned
+    await settle(c)
+    assert w.job(res.jobs[0]["job_id"]).state == "succeeded"
+    assert w.job(res.jobs[1]["job_id"]).state == "skipped"
+
+
 # --- the loop ----------------------------------------------------------------------------
 
 

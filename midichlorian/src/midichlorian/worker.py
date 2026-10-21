@@ -191,6 +191,26 @@ class Coordinator:
                 return c["sha"]
         return None
 
+    async def _newer_deploy(self, host: str, sha: str, tags) -> str | None:
+        """The sha of a recorded deploy of `host` that is a strict descendant of `sha`
+        and overlaps `tags` (a full run overlaps everything), or None.
+
+        Running `sha` over such a deploy would take those files back to an older
+        commit and leave a stale record of the newer one.
+        """
+        done = self.store.deployed(host)
+        if not done:
+            return None
+        records = [{"sha": done["full"]["sha"], "tags": None}] if done["full"] else []
+        for r in records + done["tagged"]:
+            if r["sha"] == sha:
+                continue
+            if tags is not None and r["tags"] is not None and not set(tags) & set(r["tags"]):
+                continue
+            if await self.git.is_ancestor(self._repo, sha, r["sha"]):
+                return r["sha"]
+        return None
+
     # --- requests ------------------------------------------------------------------------
 
     async def submit(
@@ -484,6 +504,17 @@ class Coordinator:
                 "already",
                 f"already deployed at {covered}",
                 deployed_sha=covered,
+            )
+
+        if pin and (newer := await self._newer_deploy(job.host, pin, job.tags)):
+            # An unpinned job deploys origin/main's head, which is never older than
+            # a recorded deploy; only a pinned one can go backwards.
+            return self._end_pending(
+                job_id,
+                "skipped",
+                f"skipped: a newer commit ({newer}) is already deployed to {job.host}; "
+                f"not taking it back to {pin}",
+                newer_sha=newer,
             )
 
         aws = await self.gates.check_aws(env)
