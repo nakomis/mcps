@@ -50,6 +50,7 @@ Read by `midichlorian-server` (`config.py`, `api.py`, `runner.py`).
 | `MIDICHLORIAN_REPO_URL` | no | Repository to clone from (default `https://github.com/nakomis/home-infra.git`) |
 | `MIDICHLORIAN_TOKEN` | yes | API bearer token (a 64-hex-character token, by convention; held in SSM) |
 | `MIDICHLORIAN_PEERS` | no | `name=url,name=url` of the other instances |
+| `MIDICHLORIAN_DRAIN_ON_SHUTDOWN` | no | `1` to wait for running playbooks on SIGTERM before exiting (for a container, where exit would kill them); see Safety rules. Default off |
 | `MIDICHLORIAN_BIND` | no | Listen address (default `0.0.0.0`) |
 | `MIDICHLORIAN_PORT` | no | Listen port (default `9140`) |
 | `MIDICHLORIAN_OCTOPRINT_KEY` | no | OctoPrint API key for the printer-busy check; if unset it is read from SSM. If neither yields a key, it is asked for again at most every 5 minutes; until then, while OctoPrint's container is running, the Prusa's state is unreadable and Leia's runs wait |
@@ -109,12 +110,23 @@ cd midichlorian && uv run pytest -q
   overrides.
 - `override_printer` bypasses that hold. A session sets it only when Martin has
   explicitly said so in that session.
-- A running playbook is never interrupted. Only queued or waiting runs can be
-  cancelled. Stopping or restarting the server does not stop a playbook either:
-  it runs in its own session, writing straight to its log, and finishes on its
-  own; the restarted server marks the run `interrupted` (check the host), keeps
-  its checkout until the process has gone, holds that host's queue until it has
-  (the waiting run says so), and carries on with the other hosts.
+- A running playbook is never interrupted by midichlorian. Only queued or waiting
+  runs can be cancelled. Stopping the server never signals a playbook either, but
+  whether it survives depends on how the server runs:
+  - As a plain service (the Cere instance, under launchd) the playbook runs in its
+    own session, writing straight to its log, and finishes on its own. The
+    restarted server marks the run `interrupted` (check the host), keeps its
+    checkout until the process has gone, holds that host's queue until it has (the
+    waiting run says so), and carries on with the other hosts. To release a hold
+    on a hung playbook, kill the pid named in the waiting run's reason, or remove
+    `worktrees/<job id>.pid` under the data directory.
+  - As a container's main process (the mace instance) the playbook dies with the
+    container, whatever its session. Set `MIDICHLORIAN_DRAIN_ON_SHUTDOWN=1` there:
+    on SIGTERM the server stops starting jobs, cancels jobs that are still in their
+    gates (they stay queued), and waits for the running playbooks, logging which
+    ones every 30 seconds, before it exits. The API is down while it waits. The
+    supervisor's grace period (for Docker, `stop_grace_period`) must be longer
+    than the longest playbook, or the kill comes anyway.
 - Each instance holds a deploy of its peer's own host (`cere` on mace, `mace` on
   Cere), which restarts the peer, while the peer has a running job. An
   unreachable peer is not waited for.

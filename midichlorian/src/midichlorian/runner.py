@@ -3,7 +3,9 @@
 The wrapper writes straight into the log (no pipe through this process), so the
 API can follow it live, and so a playbook outlives the server (R27): it runs in
 its own session, nothing here ever signals it, and a server shutdown that cancels
-the run leaves it to finish and keep logging. While it runs, its pid is in
+the run leaves it to finish and keep logging. That holds only while the server's
+process tree survives: as a container's main process its exit kills the playbook, so
+there the server drains (waits for running playbooks) before exiting. While it runs, its pid is in
 `<checkout>.pid` beside its checkout, so a restarted server leaves that checkout
 alone until the process has gone.
 """

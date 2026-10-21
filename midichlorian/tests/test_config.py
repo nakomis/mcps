@@ -32,6 +32,12 @@ def test_no_peers_and_overrides():
     assert s.peers == {} and s.bind == "127.0.0.1" and s.port == 1
 
 
+def test_drain_on_shutdown_is_opt_in():
+    assert load_settings(BASE).drain_on_shutdown is False
+    for value, expected in (("1", True), ("true", True), ("0", False), ("", False)):
+        assert load_settings({**BASE, "MIDICHLORIAN_DRAIN_ON_SHUTDOWN": value}).drain_on_shutdown is expected
+
+
 def test_refuses_self_service():
     with pytest.raises(ValueError):
         load_settings({**BASE, "MIDICHLORIAN_SERVED": "cere"})

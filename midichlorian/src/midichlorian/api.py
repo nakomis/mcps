@@ -199,8 +199,10 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        # Shutdown stops scheduling only. Running playbooks are never signalled: they
-        # finish in their own sessions and a restart records them `interrupted` (R27).
+        # Shutdown never signals a playbook (R27). By default it stops scheduling and
+        # exits, leaving playbooks to finish in their own sessions (a restart records
+        # them `interrupted`). With drain_on_shutdown (a container's main process,
+        # whose exit would kill them) it waits for the running ones first.
         task = asyncio.create_task(coordinator.run_forever())
         task.add_done_callback(scheduler_ended)
         try:
@@ -209,6 +211,8 @@ def create_app(
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):  # logged already
                 await task
+            if settings.drain_on_shutdown:
+                await coordinator.drain_for_shutdown()
 
     def scheduler_ended(task: asyncio.Task) -> None:
         """run_forever never returns: if it ends, scheduling has stopped. Say so, and

@@ -23,6 +23,8 @@ class Settings:
     bind: str
     port: int
     cthulhu_url: str = DEFAULT_CTHULHU_URL
+    # On SIGTERM, stop starting jobs and wait for running playbooks before exiting.
+    drain_on_shutdown: bool = False
 
 
 def _required(env: Mapping[str, str], key: str) -> str:
@@ -66,4 +68,6 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
         bind=env.get("MIDICHLORIAN_BIND") or "0.0.0.0",
         port=int(env.get("MIDICHLORIAN_PORT") or 9140),
         cthulhu_url=env.get("MIDICHLORIAN_CTHULHU_URL") or DEFAULT_CTHULHU_URL,
+        drain_on_shutdown=env.get("MIDICHLORIAN_DRAIN_ON_SHUTDOWN", "").strip().lower()
+        in ("1", "true", "yes", "on"),
     )

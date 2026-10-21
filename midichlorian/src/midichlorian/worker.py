@@ -99,6 +99,7 @@ class Coordinator:
         ] = {}  # job id -> (host, task)
         self._recheck_at: dict[int, datetime] = {}
         self._ready = False
+        self._draining = False
         self.interrupted = store.recover_interrupted()
         for job_id in self.interrupted:
             job = store.get_job(job_id)
@@ -369,6 +370,8 @@ class Coordinator:
 
     async def tick(self) -> None:
         """One scheduling pass: skip broken chains, start every runnable job."""
+        if self._draining:
+            return
         await self._ensure_ready()
         active = self.store.jobs(states=list(_ACTIVE), limit=100_000)
         jobs = {
@@ -431,6 +434,36 @@ class Coordinator:
         if job.log_path:
             self._note(job, f"waiting: {reason}")
         self._set(job.id, "waiting", {"gate": reason})
+
+    async def drain_for_shutdown(self, interval: float = 30.0) -> None:
+        """Stop starting jobs and wait for the playbooks that are running (SIGTERM, when
+        the server is a container's main process and its exit would kill them).
+
+        A job still in its gates has not touched a host yet, so it is cancelled and
+        stays queued. A job whose playbook is running is waited for, however long
+        that takes (the supervisor's grace period is the limit), logging what it is
+        waiting on every `interval` seconds.
+        """
+        self._draining = True
+        for job_id, (_, task) in list(self._inflight.items()):
+            job = self.store.get_job(job_id)
+            if job is not None and job.state != "running":
+                task.cancel()
+        while self._inflight:
+            waiting = []
+            for job_id, (host, _) in list(self._inflight.items()):
+                job = self.store.get_job(job_id)
+                if job is not None and job.state == "running":
+                    waiting.append(f"{host} (job {job_id})")
+            tasks = [t for _, t in list(self._inflight.values())]
+            if waiting:
+                logger.info(
+                    "shutting down: waiting for %d running playbook(s): %s",
+                    len(waiting),
+                    ", ".join(waiting),
+                )
+            await asyncio.wait(tasks, timeout=interval)
+        logger.info("shutting down: no playbooks running")
 
     async def drain(self) -> None:
         """Wait for every in-flight job task (tests, and orderly shutdown)."""

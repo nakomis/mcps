@@ -1170,6 +1170,51 @@ async def test_continuation_pinned_older_than_a_tagged_deploy_is_skipped(w):
     assert w.job(res.jobs[1]["job_id"]).state == "skipped"
 
 
+# --- draining on shutdown (container mode) ---------------------------------------------------
+
+
+async def test_drain_waits_for_the_running_playbook_and_starts_nothing_new(w, caplog):
+    caplog.set_level("INFO")
+    w.runner.gate = asyncio.Event()
+    c = w.coordinator()
+    running = (await c.submit(["cal"], "c", None, False, "s")).jobs[0]["job_id"]
+    await c.tick()
+    await until(lambda: w.runner.active == 1)
+    later = (await c.submit(["leia"], "c", None, False, "s")).jobs[0]["job_id"]
+
+    drained = asyncio.create_task(c.drain_for_shutdown(interval=0.01))
+    await asyncio.sleep(0.05)
+    assert not drained.done()  # the playbook is still going
+    assert f"waiting for 1 running playbook(s): cal (job {running})" in caplog.text
+    await c.tick()  # draining: no new job starts
+    assert w.job(later).state == "queued" and w.runner.active == 1
+
+    w.runner.gate.set()
+    await asyncio.wait_for(drained, 5)
+    assert w.job(running).state == "succeeded"
+    assert w.job(later).state == "queued"  # picked up after the restart
+    assert len(w.runner.calls) == 1
+
+
+async def test_drain_cancels_a_job_still_in_its_gates(w):
+    w.probes.busy = True
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_aws(env):
+        started.set()
+        await release.wait()
+        return OK
+
+    w.gates.check_aws = slow_aws
+    c = w.coordinator()
+    job_id = (await c.submit(["leia"], "c", None, False, "s")).jobs[0]["job_id"]
+    await c.tick()
+    await asyncio.wait_for(started.wait(), 5)
+    await asyncio.wait_for(c.drain_for_shutdown(interval=0.01), 5)  # does not wait on the gate
+    assert w.job(job_id).state == "queued" and w.runner.calls == []
+
+
 # --- the loop ----------------------------------------------------------------------------
 
 

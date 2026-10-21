@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import logging
 import threading
 import time
@@ -55,6 +56,9 @@ class FakeCoordinator:
             return False
         self.store.set_state(job_id, "cancelled", finished="2026-10-19T10:00:00Z")
         return True
+
+    async def drain_for_shutdown(self):
+        self.drained = True
 
     async def run_forever(self):
         self.ran = True
@@ -222,6 +226,17 @@ def test_info(solo):
     assert body["instance"] == "cere"
     assert body["served"] == ["cal", "leia", "luke", "mace", "rey"]
     assert body["version"]
+
+
+def test_shutdown_drains_only_when_asked(tmp_path, store, web):
+    for flag in (False, True):
+        s = dataclasses.replace(settings(tmp_path), drain_on_shutdown=flag)
+        coord = FakeCoordinator(s, store)
+        coord.drained = False
+        client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+        with TestClient(api.create_app(s, coord, client, web_dir=web)):
+            assert coord.drained is False
+        assert coord.drained is flag
 
 
 def test_lifespan_runs_the_coordinator(solo):
