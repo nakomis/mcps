@@ -154,6 +154,32 @@ pre.log, pre.tail {
 pre.log { height: 50vh; min-height: 200px; }
 pre.tail { max-height: 40vh; }
 
+/* long free text: two lines and an ellipsis until expanded */
+.clamp-wrap { min-width: 0; margin-top: 2px; }
+.clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  white-space: pre-line;
+}
+.clamp.open { display: block; overflow: visible; }
+.clamp-badge {
+  padding: 1px 9px;
+  border-radius: 10px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.clamp-toggle {
+  font: inherit; font-size: 0.82rem; padding: 0;
+  border: 0; background: none; color: var(--accent); cursor: pointer;
+  text-decoration: underline;
+}
+.clamp-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 @media (max-width: 640px) {
   .row { grid-template-columns: 3rem 1fr auto; }
   .row .meta, .row .actions { grid-column: 1 / -1; }
