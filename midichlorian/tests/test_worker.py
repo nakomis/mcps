@@ -1237,6 +1237,43 @@ async def test_pinned_job_at_the_sha_of_a_non_covering_record_runs(w):
     assert w.job(res.jobs[0]["job_id"]).state == "succeeded"
 
 
+async def test_git_error_in_the_newer_deploy_check_holds_the_job(w):
+    _abc(w)
+    w.store.record_deploy("cal", C, ["x"], "2026-10-19T09:00:00Z")
+    c = w.coordinator()
+    res = await c.submit(["cal"], B, None, False, "s")
+    real = w.git.is_ancestor
+    calls = {"n": 0}
+
+    async def flaky(repo, a, b):
+        calls["n"] += 1
+        if calls["n"] > 1:  # let the "already?" check through; fail the newer-deploy one
+            raise GitError("git merge-base: timeout after 120 s")
+        return await real(repo, a, b)
+
+    w.git.is_ancestor = flaky
+    await settle(c)
+    job = w.job(res.jobs[0]["job_id"])
+    assert job.state == "waiting"
+    assert job.detail["gate"].startswith("cannot tell whether a newer commit is deployed: ")
+    assert "timeout" in job.detail["gate"] and w.runner.calls == []
+    w.git.is_ancestor = real  # git recovers: the check completes and says skip
+    w.clock.advance(61)
+    await settle(c)
+    assert w.job(job.id).state == "skipped"
+
+
+async def test_unknown_recorded_sha_holds_rather_than_reads_as_older(w):
+    _abc(w)
+    w.store.record_deploy("cal", D, ["x"], "2026-10-19T09:00:00Z")  # not in this clone
+    c = w.coordinator()
+    res = await c.submit(["cal"], B, None, False, "s")
+    await settle(c)
+    job = w.job(res.jobs[0]["job_id"])
+    assert job.state == "waiting" and w.runner.calls == []
+    assert job.detail["gate"].startswith("cannot tell whether a newer commit is deployed: ")
+
+
 # --- draining on shutdown (container mode) ---------------------------------------------------
 
 

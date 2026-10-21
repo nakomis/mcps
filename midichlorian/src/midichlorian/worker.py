@@ -212,6 +212,9 @@ class Coordinator:
                 continue
             if tags is not None and r["tags"] is not None and not set(tags) & set(r["tags"]):
                 continue
+            # is_ancestor says "no" for a commit this clone has never heard of, which
+            # must not read as "older": ask for it, so an unknown one raises GitError.
+            await self.git.resolve(self._repo, r["sha"])
             if await self.git.is_ancestor(self._repo, sha, r["sha"]):
                 return r["sha"]
         return None
@@ -548,7 +551,16 @@ class Coordinator:
                 deployed_sha=covered,
             )
 
-        if pin and (newer := await self._newer_deploy(job.host, pin, job.tags)):
+        newer = None
+        if pin:
+            # An unpinned job deploys origin/main's head, which is never older than
+            # a recorded deploy; only a pinned one can go backwards.
+            try:
+                newer = await self._newer_deploy(job.host, pin, job.tags)
+            except GitError as exc:
+                self._hold(job_id, f"cannot tell whether a newer commit is deployed: {exc}")
+                return
+        if newer:
             return self._end_pending(
                 job_id,
                 "skipped",
