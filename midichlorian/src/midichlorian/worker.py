@@ -31,7 +31,14 @@ from midichlorian import gitops as gitops_module
 from midichlorian import recap, verify
 from midichlorian.gitops import GitError
 from midichlorian.hosts import HOSTS, printer_hold_applies
-from midichlorian.runner import append_log, build_env, log_tail, pid_alive, pid_file
+from midichlorian.runner import (
+    append_log,
+    build_env,
+    log_tail,
+    pid_alive,
+    pid_file,
+    read_pid,
+)
 from midichlorian.scheduler import covers, merge_target, next_runnable
 
 logger = logging.getLogger(__name__)
@@ -362,8 +369,12 @@ class Coordinator:
             self._finish(job, "skipped", reason)
         busy = {host for host, _ in self._inflight.values()}
         now = self.clock()
+        orphans = self._orphaned_hosts()
         for job in runnable:
             if job.host in busy:
+                continue
+            if job.host in orphans:
+                self._hold_for_orphan(job, orphans[job.host])
                 continue
             if job.state == "waiting" and now < self._recheck_at.get(job.id, now):
                 continue
@@ -372,6 +383,34 @@ class Coordinator:
                 job.host,
                 asyncio.create_task(self._process(job.id)),
             )
+
+    def _orphaned_hosts(self) -> dict[str, int]:
+        """Hosts where an interrupted job's playbook is still running: host -> pid.
+
+        A restart leaves such a playbook going (R27); a new run beside it would be
+        two playbooks on one host (on Luke, inside the rw window).
+        """
+        found: dict[str, int] = {}
+        trees = self.settings.data_dir / "worktrees"
+        for job in self.store.jobs(states=["interrupted"], limit=100_000):
+            pids = pid_file(trees / str(job.id))
+            if not pids.exists():
+                continue
+            if pid_alive(pids):
+                found.setdefault(job.host, read_pid(pids))
+            else:
+                pids.unlink(missing_ok=True)
+        return found
+
+    def _hold_for_orphan(self, job, pid: int) -> None:
+        """Make `job` wait for an orphaned playbook on its host; re-checked every pass."""
+        reason = f"previous run still finishing after restart (pid {pid})"
+        self._recheck_at.pop(job.id, None)  # no 60 s back-off: the pid is cheap to test
+        if job.state == "waiting" and job.detail.get("gate") == reason:
+            return
+        if job.log_path:
+            self._note(job, f"waiting: {reason}")
+        self._set(job.id, "waiting", {"gate": reason})
 
     async def drain(self) -> None:
         """Wait for every in-flight job task (tests, and orderly shutdown)."""

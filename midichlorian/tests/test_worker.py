@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from midichlorian import gates, gitops
+from midichlorian import runner as runner_module
 from midichlorian.config import Settings
 from midichlorian.gates import GateResult
 from midichlorian.gitops import GitError
@@ -1028,7 +1029,7 @@ async def test_cancelled_run_task_leaves_its_worktree_for_the_playbook(w):
     assert w.job(job_id).state == "running"  # the restart will say interrupted
 
 
-async def test_restart_keeps_a_live_playbooks_worktree(w):
+async def test_restart_keeps_a_live_playbooks_worktree(w, monkeypatch):
     rid = w.store.create_request(["leia"], "c", None, False, "old")
     alive = w.store.add_job(rid, "leia", "c", None, 0, False, "old")
     w.store.set_state(alive.id, "running", started="2026-10-19T11:00:00Z")
@@ -1038,12 +1039,64 @@ async def test_restart_keeps_a_live_playbooks_worktree(w):
     dead.mkdir()
     (trees / f"{alive.id}.pid").write_text(f"{os.getpid()}\n")  # a process that exists
     (trees / "999.pid").write_text("999999999\n")  # one that does not
+    monkeypatch.setattr(runner_module, "_command_of", lambda pid: "bash scripts/leia-ansible.sh")
 
     c = w.coordinator()
     assert "may still be running" in w.job(alive.id).detail["reason"]
     await settle(c)
     assert live.is_dir() and (trees / f"{alive.id}.pid").exists()
     assert not dead.exists() and not (trees / "999.pid").exists()
+
+
+# --- an orphaned playbook still holds its host (Residual 6) --------------------------------
+
+
+def _orphan(w, host="luke", pid=None):
+    """An interrupted job whose playbook's pid file is still on disk."""
+    rid = w.store.create_request([host], "c", None, False, "old")
+    old = w.store.add_job(rid, host, "c", None, 0, False, "old")
+    w.store.set_state(old.id, "running", started="2026-10-19T11:00:00Z")
+    trees = w.settings.data_dir / "worktrees"
+    (trees / str(old.id)).mkdir(parents=True)
+    (trees / f"{old.id}.pid").write_text(f"{pid if pid is not None else os.getpid()}\n")
+    return old
+
+
+async def test_interrupted_job_with_a_live_playbook_holds_its_host(w, monkeypatch):
+    monkeypatch.setattr(runner_module, "_command_of", lambda pid: "bash scripts/luke-ansible.sh")
+    old = _orphan(w)
+    c = w.coordinator()
+    job_id = (await c.submit(["luke"], "c", None, False, "s")).jobs[0]["job_id"]
+    other = (await c.submit(["cal"], "c", None, False, "s")).jobs[0]["job_id"]
+    await settle(c)
+    held = w.job(job_id)
+    assert held.state == "waiting"
+    assert held.detail["gate"] == f"previous run still finishing after restart (pid {os.getpid()})"
+    assert w.job(other).state == "succeeded"  # other hosts carry on
+    assert [r["host"] for r in w.runner.calls] == ["cal"]
+    assert w.job(old.id).state == "interrupted"
+    # the playbook finishes: normal scheduling resumes at once (no 60 s recheck)
+    monkeypatch.setattr(runner_module, "_command_of", lambda pid: "")
+    await settle(c)
+    assert w.job(job_id).state == "succeeded"
+    assert "gate" not in w.job(job_id).detail
+
+
+async def test_interrupted_job_with_a_dead_playbook_does_not_hold(w):
+    _orphan(w, pid=999999999)
+    c = w.coordinator()
+    job_id = (await c.submit(["luke"], "c", None, False, "s")).jobs[0]["job_id"]
+    await settle(c)
+    assert w.job(job_id).state == "succeeded"
+
+
+async def test_reused_pid_with_another_command_does_not_hold(w, monkeypatch):
+    monkeypatch.setattr(runner_module, "_command_of", lambda pid: "/usr/sbin/cupsd -l")
+    _orphan(w)
+    c = w.coordinator()
+    job_id = (await c.submit(["luke"], "c", None, False, "s")).jobs[0]["job_id"]
+    await settle(c)
+    assert w.job(job_id).state == "succeeded"
 
 
 # --- the loop ----------------------------------------------------------------------------

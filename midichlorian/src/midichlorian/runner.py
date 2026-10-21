@@ -67,14 +67,51 @@ def pid_file(checkout: Path) -> Path:
     return checkout.parent / f"{checkout.name}.pid"
 
 
-def pid_alive(path: Path) -> bool:
-    """Whether the pid recorded in `path` is a live process."""
+def read_pid(path: Path) -> int | None:
+    """The pid recorded in `path`, or None if there is no usable one."""
     try:
-        pid = int(path.read_text().strip())
-        os.kill(pid, 0)
+        return int(path.read_text().strip())
     except (OSError, ValueError):
+        return None
+
+
+def _command_of(pid: int) -> str | None:
+    """The command line of `pid` ("" if there is no such process), or None if it
+    cannot be asked (no `ps`)."""
+    try:
+        done = subprocess.run(
+            ["ps", "-o", "command=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+def pid_alive(path: Path) -> bool:
+    """Whether the pid recorded in `path` is a live playbook process.
+
+    A pid the system has since handed to something else (a reboot, a fresh
+    container) is not: the command line must still mention ansible (the wrapper
+    scripts are `<host>-ansible.sh`, which run ansible-playbook). If the command
+    line cannot be read at all, a live pid is trusted.
+    """
+    pid = read_pid(path)
+    if pid is None or pid <= 0:
         return False
-    return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass  # another user's process: exists, so let the command line decide
+    except OSError:
+        return False
+    command = _command_of(pid)
+    return command is None or "ansible" in command.lower()
 
 
 class AnsibleRunner:

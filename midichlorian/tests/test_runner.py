@@ -185,3 +185,13 @@ def _alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     return True
+
+
+def test_pid_alive_asks_the_command_line(tmp_path):
+    from midichlorian import runner as runner_module
+
+    pids = tmp_path / "1.pid"
+    pids.write_text(f"{os.getpid()}\n")
+    assert "python" in runner_module._command_of(os.getpid()).lower()
+    assert runner_module.pid_alive(pids) is False  # pytest is not an ansible wrapper
+    assert runner_module._command_of(999999999) == ""
