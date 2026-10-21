@@ -111,7 +111,8 @@ cd midichlorian && uv run pytest -q
   cancelled. Stopping or restarting the server does not stop a playbook either:
   it runs in its own session, writing straight to its log, and finishes on its
   own; the restarted server marks the run `interrupted` (check the host), keeps
-  its checkout until the process has gone, and carries on with the queue.
+  its checkout until the process has gone, holds that host's queue until it has
+  (the waiting run says so), and carries on with the other hosts.
 - Each instance holds a deploy of its peer's own host (`cere` on mace, `mace` on
   Cere), which restarts the peer, while the peer has a running job. An
   unreachable peer is not waited for.
