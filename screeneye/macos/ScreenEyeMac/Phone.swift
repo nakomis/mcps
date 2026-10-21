@@ -107,6 +107,24 @@ struct PhoneAPI: Sendable {
     static func point(_ p: CGPoint) -> String { "\(number(p.x)),\(number(p.y))" }
 }
 
+/// Choosing among the phones found over Bonjour, in "first found" mode.
+enum PhoneChoice {
+    /// How long the phone showing may go without a frame before another is tried.
+    static let patience: TimeInterval = 6
+
+    /// The order to try phones in: the one showing now first (so a change to the list doesn't
+    /// drop a phone that's working), then the rest as listed.
+    static func order(_ names: [String], current: String) -> [String] {
+        guard let i = names.firstIndex(of: current) else { return names }
+        return Array(names[i...] + names[..<i])
+    }
+
+    /// Whether to give up on the phone showing: it's gone quiet, and there's another to try.
+    static func shouldMoveOn(silentFor: TimeInterval, phones: Int) -> Bool {
+        phones > 1 && silentFor >= patience
+    }
+}
+
 /// Picture geometry on the Mac: the picture is the upright viewport, drawn fitted in the view.
 enum PictureMath {
     /// Where a picture of `size` is drawn, fitted and centred in `bounds`.
