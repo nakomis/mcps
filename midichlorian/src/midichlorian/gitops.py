@@ -10,6 +10,9 @@ from pathlib import Path
 # A stalled fetch or clone must not hold the clone's lock (and so every submit and
 # job) for ever: git has no default low-speed limit.
 GIT_TIMEOUT = 120.0
+# The first clone of the whole repository, over a slow link, takes longer than any
+# routine fetch.
+CLONE_TIMEOUT = 600.0
 # Never prompt for credentials (there is nobody to answer), and keep stderr in
 # English, since callers match on it.
 _GIT_ENV = {"GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
@@ -19,7 +22,7 @@ class GitError(Exception):
     """A git command failed; the message is its stderr."""
 
 
-async def _run(*args: str) -> tuple[int, str, str]:
+async def _run(*args: str, timeout: float | None = None) -> tuple[int, str, str]:
     proc = await asyncio.create_subprocess_exec(
         "git",
         *args,
@@ -29,14 +32,15 @@ async def _run(*args: str) -> tuple[int, str, str]:
         env={**os.environ, **_GIT_ENV},
         start_new_session=True,  # so a timeout can kill git's helpers too
     )
+    limit = GIT_TIMEOUT if timeout is None else timeout
     try:
-        out, err = await asyncio.wait_for(proc.communicate(), GIT_TIMEOUT)
+        out, err = await asyncio.wait_for(proc.communicate(), limit)
     except TimeoutError:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
         await proc.wait()
         name = args[2] if args[:1] == ("-C",) and len(args) > 2 else args[0]
-        raise GitError(f"git {name}: timeout after {GIT_TIMEOUT:g} s") from None
+        raise GitError(f"git {name}: timeout after {limit:g} s") from None
     return (
         proc.returncode,
         out.decode(errors="replace").strip(),
@@ -66,7 +70,7 @@ async def ensure_clone(repo: Path, url: str) -> None:
     if (repo / ".git").exists():
         return
     repo.parent.mkdir(parents=True, exist_ok=True)
-    rc, _, err = await _run("clone", "--", url, str(repo))
+    rc, _, err = await _run("clone", "--", url, str(repo), timeout=CLONE_TIMEOUT)
     if rc != 0:
         raise GitError(err or f"git clone exited {rc}")
 

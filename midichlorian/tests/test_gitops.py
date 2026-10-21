@@ -1,5 +1,6 @@
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -220,3 +221,13 @@ async def test_git_output_that_is_not_utf8_is_replaced(tmp_path, monkeypatch):
     with pytest.raises(GitError) as exc:
         await gitops.fetch(tmp_path)
     assert str(exc.value) == "caf�"
+
+
+async def test_first_clone_gets_a_longer_timeout_than_routine_git(tmp_path, monkeypatch):
+    shim_git(tmp_path, monkeypatch, "exec sleep 30")
+    monkeypatch.setattr(gitops, "GIT_TIMEOUT", 0.2)
+    monkeypatch.setattr(gitops, "CLONE_TIMEOUT", 0.6)
+    started = time.monotonic()
+    with pytest.raises(GitError, match=r"timeout after 0\.6 s"):
+        await gitops.ensure_clone(tmp_path / "repo", "url")
+    assert time.monotonic() - started >= 0.5
