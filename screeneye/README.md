@@ -130,7 +130,7 @@ never touches the Mac's own camera.
 - **Open in Claude** (⇧⌘O): takes the same picture (note `parcel` if empty) and hands its path
   to [parcel-finder](https://github.com/nakomis/parcel-finder), a LaunchAgent on the Mac that
   finds the Claude Code conversation where the item was bought and wakes it with the photo
-  (`POST http://127.0.0.1:8765/photo`, `{"path": …}`). If parcel-finder isn't running, the
+  (`POST http://127.0.0.1:8775/photo`, `{"path": …}`). If parcel-finder isn't running, the
   picture is still saved and the app says so.
 
 Being a signed app with `NSLocalNetworkUsageDescription` and
