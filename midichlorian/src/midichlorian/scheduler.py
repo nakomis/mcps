@@ -94,3 +94,61 @@ def next_runnable(jobs: list[Job]) -> tuple[list[Job], list[Job]]:
             passed.add(j.host)
             runnable.insert(runnable.index(head), j)
     return runnable, to_skip
+
+
+_ACTIVE = ("queued", "waiting", "running")
+
+
+def deploys(j: Job) -> str | None:
+    """Which commit an active job will deploy: "pinned", "main@start" or "first-host".
+
+    An unpinned job at position 0 deploys origin/main's head when it starts, not
+    the sha recorded at request time; a later host of a request deploys whatever
+    the request's first host did. None for a job that is no longer pending/running.
+    """
+    if j.state not in _ACTIVE:
+        return None
+    if j.detail.get("pinned_sha"):
+        return "pinned"
+    return "main@start" if j.position == 0 else "first-host"
+
+
+def coverage(jobs: list[Job]) -> dict[int, int]:
+    """Map each covered job id to the id of the earlier job that will cover it.
+
+    Display only; scheduling ignores it. An earlier unpinned position-0 job X on
+    the same host (queued, waiting or running) deploys main at its start, so a
+    later queued/waiting unpinned Y whose tags X's cover will find its commit
+    already deployed and end "already" — unless X fails. X's main must be at
+    least as new as Y's request-time commit: X has not started, or started at or
+    after Y was created. A later host of a request (position > 0) deploys what its
+    first host deployed, which may be newer than Y's request: then X must not have
+    started, or have started at or after that first host did (if the first host is
+    not in `jobs` it has finished, so only an unstarted X will do). The earliest
+    qualifying X wins (same order as the queue: by id).
+    """
+    out: dict[int, int] = {}
+    ordered = sorted(jobs, key=lambda j: j.id)
+    first = {j.request_id: j for j in ordered if j.position == 0}
+    for y in ordered:
+        if y.state not in _PENDING or y.detail.get("pinned_sha"):
+            continue
+        if y.position == 0:
+            since = y.created
+        else:
+            head = first.get(y.request_id)
+            since = head.started if head else None  # None: only an unstarted X
+        for x in ordered:
+            if x.id >= y.id:
+                break
+            if (
+                x.host == y.host
+                and x.state in _ACTIVE
+                and x.position == 0
+                and not x.detail.get("pinned_sha")
+                and covers(True, x.tags, y.tags)
+                and (x.started is None or (since is not None and x.started >= since))
+            ):
+                out[y.id] = x.id
+                break
+    return out

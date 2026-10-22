@@ -186,3 +186,7 @@ pre.tail { max-height: 40vh; }
   .kv { grid-template-columns: 1fr; }
   .kv dt { margin-top: 4px; }
 }
+
+.composite { margin-top: 4px; }
+.composite-body { margin-top: 4px; padding-left: 8px; border-left: 2px solid var(--border, currentColor); }
+.composite-body[hidden] { display: none; }

@@ -17,6 +17,7 @@ const BADGE_CLASS = {
   failed: "bad", interrupted: "bad",
   running: "info", waiting: "warn", queued: "info",
   skipped: "", cancelled: "",
+  covered: "warn",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -340,25 +341,86 @@ async function cancelRun(job) {
   refresh();
 }
 
+function queueJob(instance, id) {
+  return state.queue.find((j) => j.id === id && isLocal(j.instance) === isLocal(instance)
+    && (isLocal(instance) || j.instance === instance));
+}
+
+function runLink(instance, id) {
+  const a = el("a", "mono", "#" + id);
+  a.href = hashFor(instance, id);
+  a.addEventListener("click", (e) => e.stopPropagation());
+  return a;
+}
+
+/* A pending job at position 0 that is not pinned deploys origin/main as it is when the job
+   starts, so the sha recorded when it was requested is only what was asked for. */
+function shaCell(job) {
+  if (PENDING.includes(job.state) && job.deploys === "main@start") {
+    return el("span", null, "main @ start (asked: ", shaNode(job.sha), ")");
+  }
+  const d = job.detail || {};
+  if (job.state === "running" && d.deploying_sha) return shaNode(d.deploying_sha);
+  return shaNode(TERMINAL.includes(job.state) && d.deployed_sha ? d.deployed_sha : job.sha);
+}
+
+/* The "composite" expander: who is merged into a job and which later runs it folds in.
+   Same aria-expanded pattern as the clamp toggle; state.expanded survives repaints. */
+function compositeNode(job, key) {
+  const covered = (job.covers || []).map((id) => queueJob(job.instance, id)).filter(Boolean);
+  const people = new Set(job.requesters || []);
+  for (const c of covered) for (const r of c.requesters || []) people.add(r);
+  const ekey = "composite:" + key;
+  const panel = el("div", "composite-body",
+    el("div", null, "Requested by: " + ([...people].join(", ") || "—")),
+    el("ul", "plain", ...covered.map((c) => el("li", null, runLink(c.instance, c.id),
+      " " + c.host + " · " + tagsText(c.tags) + " · ", timeNode(c.created),
+      (c.requesters || []).length ? " · " + c.requesters.join(", ") : ""))));
+  panel.id = "composite-" + key;
+  const button = el("button", "clamp-toggle");
+  button.type = "button";
+  button.setAttribute("aria-controls", panel.id);
+  const sync = (open) => {
+    panel.hidden = !open;
+    button.textContent = (open ? "Hide" : "Show") + " " + covered.length + " folded in";
+    button.setAttribute("aria-expanded", open ? "true" : "false");
+  };
+  sync(state.expanded.has(ekey));
+  button.addEventListener("click", (e) => {
+    e.stopPropagation();  // rows are clickable
+    const open = !state.expanded.has(ekey);
+    if (open) state.expanded.add(ekey); else state.expanded.delete(ekey);
+    sync(open);
+  });
+  return el("div", "composite", badge("composite", "info"), " ", button, panel);
+}
+
 function jobRow(job, withCancel) {
   const row = el("div", "row clickable");
   row.tabIndex = 0;
   const key = runKey(job.instance, job.id);
   if (state.selected && runKey(state.selected.instance, state.selected.id) === key) row.classList.add("selected");
-  const meta = el("div", "meta", shaNode(job.sha), " · " + tagsText(job.tags));
+  const meta = el("div", "meta", shaCell(job), " · " + tagsText(job.tags));
   const when = job.finished || job.started || job.created;
   meta.append(" · ", timeNode(when));
   if (job.requesters && job.requesters.length) meta.append(" · " + job.requesters.join(", "));
   if (!isLocal(job.instance)) meta.append(" · on " + job.instance);
+  const covered = withCancel && PENDING.includes(job.state) && job.covered_by;
+  if (covered) {
+    meta.append(el("div", null, "folded into ", runLink(job.instance, job.covered_by),
+      " · runs only if #" + job.covered_by + " fails"));
+  }
   if (job.state === "waiting" && job.detail && job.detail.gate) {
     meta.append(clampText("gate:" + key, job.detail.gate, "clamp-badge"));
   } else if (job.reason || (job.detail && job.detail.reason)) {
     meta.append(clampText("row:" + key, job.reason || job.detail.reason));
   }
+  if (withCancel && job.covers && job.covers.length) meta.append(compositeNode(job, key));
 
   const actions = el("div", "actions");
   if (withCancel && PENDING.includes(job.state)) actions.append(cancelButton(job));
-  row.append(el("div", "mono", "#" + job.id), el("div", "cell-host", job.host), stateBadge(job.state), meta, actions);
+  row.append(el("div", "mono", "#" + job.id), el("div", "cell-host", job.host),
+    covered ? badge("covered", BADGE_CLASS.covered) : stateBadge(job.state), meta, actions);
 
   const open = () => { location.hash = hashFor(job.instance, job.id); };
   row.addEventListener("click", open);
@@ -378,10 +440,12 @@ function renderQueue() {
 
 function renderHistory() {
   if (!changed("history", state.history, state.historyOk, selectedKey())) return;
-  if (!state.history.length) {
+  // the queue already shows everything pending or running; History is finished runs only
+  const finished = state.history.filter((j) => TERMINAL.includes(j.state));
+  if (!finished.length) {
     return replace($("history"), el("p", "muted", state.historyOk ? "No runs yet." : "No data yet."));
   }
-  replace($("history"), ...state.history.map((j) => jobRow(j, false)));
+  replace($("history"), ...finished.map((j) => jobRow(j, false)));
 }
 
 /* ---------- run detail ---------- */
@@ -410,6 +474,10 @@ function renderDetail(job) {
   const dkey = runKey(job.instance, job.id);
   if (d.reason) pairs.push(...kv("Reason", clampText("detail:" + dkey, d.reason)));
   if (d.gate) pairs.push(...kv("Waiting on", clampText("detail-gate:" + dkey, d.gate, "clamp-badge")));
+  if (job.covered_by) {
+    pairs.push(...kv("Covered by", runLink(job.instance, job.covered_by), " (runs only if it fails)"));
+  }
+  if (PENDING.includes(job.state) && job.deploys === "main@start") pairs.push(...kv("Will deploy", "origin/main as it is when this starts"));
   pairs.push(...kv("Requested", shaNode(d.requested_sha || job.sha)));
   if (d.deployed_sha) pairs.push(...kv("Deployed", shaNode(d.deployed_sha)));
   pairs.push(...kv("Tags", tagsText(job.tags)));
