@@ -121,14 +121,23 @@ def coverage(jobs: list[Job]) -> dict[int, int]:
     later queued/waiting unpinned Y whose tags X's cover will find its commit
     already deployed and end "already" — unless X fails. X's main must be at
     least as new as Y's request-time commit: X has not started, or started at or
-    after Y was created. The earliest qualifying X wins (same order as the queue:
-    by id).
+    after Y was created. A later host of a request (position > 0) deploys what its
+    first host deployed, which may be newer than Y's request: then X must not have
+    started, or have started at or after that first host did (if the first host is
+    not in `jobs` it has finished, so only an unstarted X will do). The earliest
+    qualifying X wins (same order as the queue: by id).
     """
     out: dict[int, int] = {}
     ordered = sorted(jobs, key=lambda j: j.id)
+    first = {j.request_id: j for j in ordered if j.position == 0}
     for y in ordered:
         if y.state not in _PENDING or y.detail.get("pinned_sha"):
             continue
+        if y.position == 0:
+            since = y.created
+        else:
+            head = first.get(y.request_id)
+            since = head.started if head else None  # None: only an unstarted X
         for x in ordered:
             if x.id >= y.id:
                 break
@@ -138,7 +147,7 @@ def coverage(jobs: list[Job]) -> dict[int, int]:
                 and x.position == 0
                 and not x.detail.get("pinned_sha")
                 and covers(True, x.tags, y.tags)
-                and (x.started is None or x.started >= y.created)
+                and (x.started is None or (since is not None and x.started >= since))
             ):
                 out[y.id] = x.id
                 break

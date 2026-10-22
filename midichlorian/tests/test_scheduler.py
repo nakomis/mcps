@@ -224,3 +224,27 @@ def test_deploys():
     assert deploys(cj(1, pinned=True)) == "pinned"
     assert deploys(cj(1, position=1)) == "first-host"
     assert deploys(cj(1, state="succeeded")) is None
+
+
+def test_coverage_later_host_needs_x_started_after_its_first_host():
+    # 22 Oct 2026: #6 luke started 13:29:55, then request 22's leia (#12) started
+    # at 13:33:02 and may deploy a newer main than #6 did, so #13 is not covered.
+    x = cj(6, state="running", started="2026-10-22T13:29:55Z", request=7)
+    head = cj(12, host="leia", state="running", request=22, started="2026-10-22T13:33:02Z",
+              created="2026-10-22T10:52:23Z")
+    y = cj(13, request=22, position=1, created="2026-10-22T10:52:23Z")
+    assert coverage([x, head, y]) == {}
+    later = cj(6, state="running", started="2026-10-22T13:34:00Z", request=7)
+    assert coverage([later, head, y]) == {13: 6}
+
+
+def test_coverage_later_host_with_unstarted_x_is_covered():
+    head = cj(12, host="leia", state="waiting", request=22)
+    y = cj(13, request=22, position=1)
+    assert coverage([cj(6, state="waiting", request=7), head, y]) == {13: 6}
+
+
+def test_coverage_later_host_whose_first_host_finished_needs_unstarted_x():
+    y = cj(13, request=22, position=1)  # request 22's first host is no longer active
+    assert coverage([cj(6, state="running", started="2026-10-22T13:40:00Z", request=7), y]) == {}
+    assert coverage([cj(6, state="waiting", request=7), y]) == {13: 6}

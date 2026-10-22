@@ -360,6 +360,7 @@ function shaCell(job) {
     return el("span", null, "main @ start (asked: ", shaNode(job.sha), ")");
   }
   const d = job.detail || {};
+  if (job.state === "running" && d.deploying_sha) return shaNode(d.deploying_sha);
   return shaNode(TERMINAL.includes(job.state) && d.deployed_sha ? d.deployed_sha : job.sha);
 }
 

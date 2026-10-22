@@ -675,6 +675,7 @@ class Coordinator:
         except GitError as exc:
             await self._drop_worktree(worktree)
             return self._finish(job, "failed", f"checkout failed: {exc}")
+        self._set(job.id, "running", {"deploying_sha": head})  # what the UI shows while it runs
         where = f"pinned commit {head}" if pin else f"origin/main {head}"
         self._note(job, f"running {host.wrapper} at {where}")
         warnings = list(job.detail.get("warnings", []))

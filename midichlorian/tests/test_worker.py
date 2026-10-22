@@ -321,6 +321,7 @@ async def test_sha_newer_than_local_clone_is_fetched_not_refused(w):
     assert states(res) == ["queued"]
     await settle(c)
     assert w.job(res.jobs[0]["job_id"]).detail["deployed_sha"] == "d"
+    assert w.job(res.jobs[0]["job_id"]).detail["deploying_sha"] == "d"  # recorded at start, kept
 
 
 def _git(cwd, *args):
