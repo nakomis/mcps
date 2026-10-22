@@ -91,3 +91,20 @@ def test_long_text_is_clamped_with_an_accessible_toggle(client):
     assert 'setAttribute("aria-expanded"' in js
     assert "scrollHeight > body.clientHeight" in js
     assert "state.expanded" in js
+
+
+def test_composite_runs_have_an_accessible_expander(client):
+    js = client.get("/app.js").text
+    css = client.get("/style.css").text
+    assert '"composite"' in js and "compositeNode" in js
+    assert 'composite:' in js and "state.expanded" in js
+    assert 'setAttribute("aria-controls", panel.id)' in js
+    assert 'setAttribute("aria-expanded"' in js
+    assert "folded into " in js and "runs only if #" in js
+    assert "main @ start (asked: " in js
+    assert ".composite-body" in css
+
+
+def test_history_lists_finished_runs_only(client):
+    js = client.get("/app.js").text
+    assert "state.history.filter((j) => TERMINAL.includes(j.state))" in js

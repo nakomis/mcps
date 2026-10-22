@@ -363,6 +363,23 @@ def test_queue_lists_active_jobs_with_instance(solo):
     assert all(j["instance"] == "cere" for j in body["jobs"])
 
 
+def test_queue_and_runs_carry_coverage_fields(solo):
+    tc, _, store = solo
+    x = make_job(store, "leia", "waiting")
+    y = make_job(store, "leia", "queued")
+    pinned = make_job(store, "luke", "queued", detail={"pinned_sha": SHA})
+    done = make_job(store, "luke", "succeeded")
+    jobs = {j["id"]: j for j in tc.get("/api/queue").json()["jobs"]}
+    assert jobs[x.id]["covers"] == [y.id] and jobs[x.id]["covered_by"] is None
+    assert jobs[x.id]["deploys"] == "main@start"
+    assert jobs[y.id]["covered_by"] == x.id and jobs[y.id]["covers"] == []
+    assert jobs[pinned.id]["deploys"] == "pinned" and jobs[pinned.id]["covered_by"] is None
+    runs = {r["id"]: r for r in tc.get("/api/runs").json()["runs"]}
+    assert runs[y.id]["covered_by"] == x.id
+    assert runs[done.id]["deploys"] is None and runs[done.id]["covers"] == []
+    assert tc.get(f"/api/runs/{y.id}").json()["covered_by"] == x.id
+
+
 def test_runs_newest_first_filter_and_limit(solo):
     tc, _, store = solo
     a = make_job(store, "luke", "succeeded")

@@ -1,4 +1,10 @@
-from midichlorian.scheduler import covers, merge_target, next_runnable
+from midichlorian.scheduler import (
+    coverage,
+    covers,
+    deploys,
+    merge_target,
+    next_runnable,
+)
 from midichlorian.store import Job
 
 
@@ -150,3 +156,71 @@ def test_only_one_override_passes_and_only_a_printer_hold():
 def test_override_never_passes_a_running_job():
     runnable, _ = next_runnable([job(1, "leia", "running"), override(2)])
     assert runnable == []
+
+
+def cj(id, created="2026-10-19T00:00:00Z", started=None, pinned=False, **kw):
+    j = job(id, **kw)
+    j.created = created
+    j.started = started
+    if pinned:
+        j.detail = {"pinned_sha": "a" * 40}
+    return j
+
+
+def test_coverage_basic_later_queued_job_is_covered():
+    assert coverage([cj(1, state="waiting"), cj(2)]) == {2: 1}
+
+
+def test_coverage_pinned_earlier_job_does_not_cover():
+    assert coverage([cj(1, pinned=True), cj(2)]) == {}
+
+
+def test_coverage_pinned_later_job_is_not_covered():
+    assert coverage([cj(1), cj(2, pinned=True)]) == {}
+
+
+def test_coverage_later_position_job_does_not_cover():
+    assert coverage([cj(1, position=1, request=2), cj(2)]) == {}
+
+
+def test_coverage_tags():
+    assert coverage([cj(1, tags=["a"]), cj(2)]) == {}  # narrower does not cover full
+    assert coverage([cj(1, tags=["a", "b"]), cj(2, tags=["a"])]) == {2: 1}
+    assert coverage([cj(1, tags=["a"]), cj(2, tags=["b"])]) == {}
+    assert coverage([cj(1), cj(2, tags=["a"])]) == {2: 1}
+
+
+def test_coverage_running_job_started_before_request_does_not_cover():
+    x = cj(1, state="running", started="2026-10-19T00:00:00Z")
+    assert coverage([x, cj(2, created="2026-10-19T00:05:00Z")]) == {}
+
+
+def test_coverage_running_job_started_after_request_covers():
+    x = cj(1, state="running", started="2026-10-19T00:10:00Z")
+    assert coverage([x, cj(2, created="2026-10-19T00:05:00Z")]) == {2: 1}
+
+
+def test_coverage_other_host_not_covered():
+    assert coverage([cj(1, host="leia"), cj(2, host="luke")]) == {}
+
+
+def test_coverage_earliest_of_several_wins():
+    assert coverage([cj(1), cj(2), cj(3)]) == {2: 1, 3: 1}
+
+
+def test_coverage_finished_jobs_neither_cover_nor_are_covered():
+    assert coverage([cj(1, state="succeeded"), cj(2)]) == {}
+    assert coverage([cj(1), cj(2, state="failed")]) == {}
+
+
+def test_coverage_ignores_override_printer():
+    y = cj(2)
+    y.override_printer = True
+    assert coverage([cj(1), y]) == {2: 1}
+
+
+def test_deploys():
+    assert deploys(cj(1)) == "main@start"
+    assert deploys(cj(1, pinned=True)) == "pinned"
+    assert deploys(cj(1, position=1)) == "first-host"
+    assert deploys(cj(1, state="succeeded")) is None

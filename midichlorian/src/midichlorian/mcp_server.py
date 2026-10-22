@@ -487,7 +487,13 @@ async def hosts() -> dict:
 
 @mcp.tool()
 async def queue() -> dict:
-    """The live queue: queued, waiting (held for a printer) and running jobs."""
+    """The live queue: queued, waiting (held for a printer) and running jobs.
+
+    `covered_by` is the id of an earlier run on the same host that will deploy main first, so
+    this run will end "already" unless that one fails; `covers` lists the runs a job folds in.
+    `deploys` says what a pending job will deploy: "main@start" (origin/main when it starts,
+    not its recorded `sha`), "pinned" or "first-host". `runs` carries the same fields.
+    """
     return await service().queue()
 
 

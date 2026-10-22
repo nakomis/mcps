@@ -30,6 +30,7 @@ from midichlorian.config import Settings, load_settings
 from midichlorian.hosts import HOSTS
 from midichlorian.printers import Probes
 from midichlorian.runner import AnsibleRunner
+from midichlorian.scheduler import coverage, deploys
 from midichlorian.store import Store
 from midichlorian.worker import Coordinator
 
@@ -83,8 +84,23 @@ def _version() -> str:
         return "0.0.0"
 
 
-def _job_dict(job, instance: str) -> dict:
-    return {**asdict(job), "instance": instance}
+def _job_dict(job, instance: str, cov: dict[int, int] | None = None) -> dict:
+    """A job as JSON, plus how the queue will treat it (display only, see scheduler.coverage).
+
+    `covered_by`: id of the earlier run whose deploy will make this one end "already",
+    else null. `covers`: ids of the later runs this one folds in. `deploys`: for
+    pending/running jobs "main@start" (origin/main's head when it starts, not `sha`),
+    "pinned" (the requested full sha) or "first-host" (what the request's first host
+    deployed); null once finished.
+    """
+    cov = cov or {}
+    return {
+        **asdict(job),
+        "instance": instance,
+        "covered_by": cov.get(job.id),
+        "covers": sorted(y for y, x in cov.items() if x == job.id),
+        "deploys": deploys(job),
+    }
 
 
 def _summary(job) -> dict:
@@ -311,7 +327,8 @@ def create_app(
     @api.get("/queue")
     async def queue(local: bool = False):
         jobs = store.jobs(states=_ACTIVE, limit=10_000)
-        out = [_job_dict(j, instance) for j in sorted(jobs, key=lambda j: j.id)]
+        cov = coverage(jobs)
+        out = [_job_dict(j, instance, cov) for j in sorted(jobs, key=lambda j: j.id)]
         out.sort(key=lambda j: j["state"] != "running")  # stable: running first
         down: list[str] = []
         if not local and peers:
@@ -325,7 +342,8 @@ def create_app(
         limit: int = Query(50, ge=1, le=500),
         local: bool = False,
     ):
-        out = [_job_dict(j, instance) for j in store.jobs(host=host, limit=limit)]
+        cov = coverage(store.jobs(states=_ACTIVE, limit=10_000))
+        out = [_job_dict(j, instance, cov) for j in store.jobs(host=host, limit=limit)]
         down: list[str] = []
         if not local and peers:
             params = {"limit": limit, **({"host": host} if host else {})}
@@ -340,7 +358,7 @@ def create_app(
         peer = target(instance_name)
         if peer:
             return await proxy(peer, "GET", f"/api/runs/{job_id}")
-        return _job_dict(local_job(job_id), instance)
+        return _job_dict(local_job(job_id), instance, coverage(store.jobs(states=_ACTIVE, limit=10_000)))
 
     @api.get("/runs/{job_id}/log")
     async def run_log(
