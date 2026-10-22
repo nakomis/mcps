@@ -362,7 +362,8 @@ def create_project(name: str, identifier: str, description: str = "") -> dict:
     """Create a project. identifier is the ref prefix: up to 12 letters/digits,
     e.g. HOME. Plane rejects names containing - . & + , : ; $ ^ { } * = ? @ # | ' < > ( ) % !
     Martin (martin@nakomis.com) and plane@nakomis.com are added as admins, and
-    the project is registered with the nakom.is shortener (see
+    BAU's account (bau@nakomis.com) as a member, so BAU can work the project
+    once it is enabled in ATC. The project is registered with the nakom.is shortener (see
     sync_shortener_projects). A failed registration is reported under
     "shortener" rather than failing the call."""
     ident = identifier.strip().upper()
@@ -377,12 +378,12 @@ def create_project(name: str, identifier: str, description: str = "") -> dict:
     _refresh_if_stale(force=True)
     members = {m["member"]["email"] if isinstance(m.get("member"), dict) else m.get("email"): m
                for m in _get_all("/members/")}
-    for email in ("martin@nakomis.com", "plane@nakomis.com"):
+    for email, role in (("martin@nakomis.com", 20), ("plane@nakomis.com", 20), ("bau@nakomis.com", 15)):
         m = members.get(email)
         if m:
             uid = m["member"]["id"] if isinstance(m.get("member"), dict) else m["id"]
             try:
-                _request("POST", f"/projects/{p['id']}/project-members/", json={"member": uid, "role": 20})
+                _request("POST", f"/projects/{p['id']}/project-members/", json={"member": uid, "role": role})
             except ToolError:
                 pass  # already a member (e.g. the creator)
     result = get_project(ident)
