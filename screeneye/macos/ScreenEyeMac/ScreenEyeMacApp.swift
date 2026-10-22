@@ -19,6 +19,8 @@ struct ScreenEyeMacApp: App {
                     .keyboardShortcut("s")
                 Button("Take Picture of the Whole Frame") { viewer.takePicture(note: viewer.note, fullFrame: true) }
                     .keyboardShortcut("s", modifiers: [.command, .option])
+                Button("Open in Claude") { viewer.takePicture(note: viewer.note, openInClaude: true) }
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
             }
             CommandGroup(after: .pasteboard) {
                 Button("Copy Live Frame") { viewer.copyFrame() }

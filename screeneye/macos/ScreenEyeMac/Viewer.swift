@@ -234,11 +234,13 @@ final class Viewer {
     // MARK: Pictures
 
     /// Takes a full-resolution picture and files it; copies it to the clipboard if asked.
-    func takePicture(note: String, fullFrame: Bool = false) {
+    /// With `openInClaude`, also hands the saved picture to parcel-finder (note defaults to "parcel").
+    func takePicture(note: String, fullFrame: Bool = false, openInClaude: Bool = false) {
         guard taken != .taking else { return }
         guard let api else { taken = .failed(ViewerError.noPhone.localizedDescription); return }
         taken = .taking
-        let note = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        var note = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        if openInClaude && note.isEmpty { note = "parcel" }
         let defaults = UserDefaults.standard
         let folder = defaults.string(forKey: Keys.folder).map { URL(filePath: $0, directoryHint: .isDirectory) }
             ?? PictureStore.defaultFolder
@@ -262,6 +264,14 @@ final class Viewer {
                 let url = try PictureStore.save(jpeg: jpeg, sidecar: sidecar, note: note.isEmpty ? nil : note,
                                                 in: folder, at: when)
                 if defaults.bool(forKey: Keys.copyAfterTaking) { Self.copy(jpeg: jpeg) }
+                if openInClaude {
+                    do {
+                        try await ParcelFinderClient().send(savedPath: url)
+                    } catch {
+                        taken = .failed("Saved, but parcel-finder isn't running")
+                        return
+                    }
+                }
                 taken = .saved(url)
             } catch {
                 taken = .failed(message(for: error))
