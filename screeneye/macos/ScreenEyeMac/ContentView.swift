@@ -284,6 +284,12 @@ struct ContentView: View {
                 .controlSize(.large)
                 .disabled(viewer.taken == .taking)
                 .help("Full resolution, saved on this Mac (⌘S; ⌥⌘S for the whole frame)")
+                Button { viewer.takePicture(note: viewer.note, openInClaude: true) } label: {
+                    Label("Open in Claude", systemImage: "shippingbox")
+                }
+                .controlSize(.large)
+                .disabled(viewer.taken == .taking)
+                .help("Take the picture and find the Claude conversation where this was bought (⇧⌘O)")
             }
             takenStatus
         }
