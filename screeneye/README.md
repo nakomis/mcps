@@ -74,14 +74,14 @@ and `viewport` all agree with the picture it returns.
 - **Pan:** zoomed past a lens, drag the preview to move around; an overview in
   the corner shows the whole frame with the visible region outlined. Double
   tap recentres. It's the same viewport as `/set?pan=`.
-- **Open in Claude:** sends what's on screen, upright and at full resolution, to
+- **Claude** (Open in Claude): sends what's on screen, upright and at full resolution, to
   [parcel-finder](https://github.com/nakomis/parcel-finder) on the Mac, with the text Vision
   reads from it (on a 1600 px copy, lines below 0.5 confidence dropped). parcel-finder finds
   the Claude Code conversation the part was bought in and hands it the photo. The phone shows
   each step, and the pick-list when the conversation isn't clear. parcel-finder is found over
   Bonjour (`_parcel-finder._tcp`). Pair once: run `parcel-finder pair` on the Mac, then
   Settings → Scan pairing code (or paste the token). The token is kept in the phone's keychain.
-- **Save to Mac:** pushes what's on screen at full resolution (the same image as
+- **Save** (to Mac): pushes what's on screen at full resolution (the same image as
   `/snapshot.jpg`), with the camera state and an optional note, to the ScreenEye
   host. The host is found over Bonjour (`_screeneye-host._tcp`, TXT
   `path=/api/frames`); if none is found, the address typed under Settings (the
