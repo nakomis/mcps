@@ -10,6 +10,7 @@ struct ScreenEyeApp: App {
                 .onAppear {
                     UIApplication.shared.isIdleTimerDisabled = true
                     camera.start()
+                    Task.detached(priority: .utility) { ParcelOCR.warmUp() }
                 }
         }
     }

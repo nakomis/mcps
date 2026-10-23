@@ -17,7 +17,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_NSCameraUsageDescription: "ScreenEye points the camera at a screen so Claude can read it."
-        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "ScreenEye serves camera snapshots to your Mac on the local network, and saves frames to it."
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "ScreenEye serves camera snapshots to your Mac on the local network, saves frames to it, and sends parts to parcel-finder."
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown"
@@ -27,11 +27,11 @@ targets:
     info:
       path: ScreenEye/Info.plist
       properties:
-        NSBonjourServices: ["_screeneye._tcp", "_screeneye-host._tcp"]
+        NSBonjourServices: ["_screeneye._tcp", "_screeneye-host._tcp", "_parcel-finder._tcp"]
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         NSCameraUsageDescription: "ScreenEye points the camera at a screen so Claude can read it."
-        NSLocalNetworkUsageDescription: "ScreenEye serves camera snapshots to your Mac on the local network, and saves frames to it."
+        NSLocalNetworkUsageDescription: "ScreenEye serves camera snapshots to your Mac on the local network, saves frames to it, and sends parts to parcel-finder."
         UILaunchScreen: {}
   ScreenEyeTests:
     type: bundle.unit-test

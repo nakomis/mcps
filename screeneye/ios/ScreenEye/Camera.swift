@@ -325,6 +325,10 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unc
         return (jpeg, meta)
     }
 
+    /// The picture turned upright, at full resolution, for parcel-finder (`/snapshot.jpg?upright=1`).
+    /// Call it off the main thread.
+    func uprightFrame(maxDim: Double? = nil) -> Data? { snapshot(upright: true, full: false, maxDim: maxDim)?.0 }
+
     /// The latest frame as a JPEG (the viewport, or the whole frame), raw or turned upright,
     /// with the orientation and viewport it was taken with. `maxDim` scales it down so its longer
     /// side is at most that many pixels.
