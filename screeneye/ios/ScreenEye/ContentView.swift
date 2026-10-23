@@ -157,22 +157,26 @@ struct ContentView: View {
                     saver.save(camera: camera, finder: finder, note: note,
                                manualURL: hostURL, device: UIDevice.current.name)
                 } label: {
-                    Label("Save to Mac", systemImage: "square.and.arrow.down")
+                    Label("Save", systemImage: "square.and.arrow.down")
                         .font(.headline)
+                        .lineLimit(1)
                         .padding(.horizontal, 14).padding(.vertical, 8)
                         .background(saver.isSaving ? Color.gray : Color.blue, in: Capsule())
                 }
                 .disabled(saver.isSaving)
+                .accessibilityLabel("Save to Mac")
                 Button {
                     noteFocused = false
                     runner.open(camera: camera, finder: parcelHost)
                 } label: {
-                    Label("Open in Claude", systemImage: "sparkle.magnifyingglass")
+                    Label("Claude", systemImage: "sparkle.magnifyingglass")
                         .font(.headline)
+                        .lineLimit(1)
                         .padding(.horizontal, 14).padding(.vertical, 8)
                         .background(runner.isBusy ? Color.gray : Color.orange, in: Capsule())
                 }
                 .disabled(runner.isBusy)
+                .accessibilityLabel("Open in Claude")
             }
             saveStatus
             parcelStatus
