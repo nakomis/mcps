@@ -8,6 +8,11 @@ struct ContentView: View {
     let camera: Camera
     @State private var finder = HostFinder()
     @State private var saver = Saver()
+    @State private var parcelHost = HostFinder(type: "_parcel-finder._tcp")
+    @State private var runner = ParcelRunner()
+    /// Looking for the pairing QR code in the camera's view (started from Settings).
+    @State private var scanningForPairing = false
+    @State private var pairingMessage: String?
     @State private var note = ""
     @State private var showSettings = false
     @GestureState private var pinchStart: Double?
@@ -57,9 +62,17 @@ struct ContentView: View {
             .foregroundStyle(.white)
         }
         .background(.black)
-        .onAppear { finder.start() }
+        .onAppear { finder.start(); parcelHost.start() }
         .sheet(isPresented: $showSettings) {
-            SettingsView(finder: finder, hostURL: $hostURL)
+            SettingsView(finder: finder, hostURL: $hostURL, parcelHost: parcelHost) {
+                showSettings = false
+                scanForPairing()
+            }
+        }
+        .sheet(item: Binding(get: { runner.waiting }, set: { _ in })) { run in
+            ParcelChoiceView(run: run) { runner.choose($0) }
+                .presentationDetents([.medium, .large])
+                .interactiveDismissDisabled()
         }
     }
 
@@ -150,8 +163,82 @@ struct ContentView: View {
                         .background(saver.isSaving ? Color.gray : Color.blue, in: Capsule())
                 }
                 .disabled(saver.isSaving)
+                Button {
+                    noteFocused = false
+                    runner.open(camera: camera, finder: parcelHost)
+                } label: {
+                    Label("Open in Claude", systemImage: "sparkle.magnifyingglass")
+                        .font(.headline)
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(runner.isBusy ? Color.gray : Color.orange, in: Capsule())
+                }
+                .disabled(runner.isBusy)
             }
             saveStatus
+            parcelStatus
+        }
+    }
+
+    // MARK: Open in Claude
+
+    @ViewBuilder private var parcelStatus: some View {
+        if let pairingMessage {
+            Label(pairingMessage, systemImage: scanningForPairing ? "qrcode.viewfinder" : "checkmark.circle.fill")
+                .font(.caption.bold())
+                .padding(6)
+                .background((scanningForPairing ? Color.black : Color.green).opacity(0.8), in: RoundedRectangle(cornerRadius: 6))
+        }
+        switch runner.state {
+        case .idle:
+            EmptyView()
+        case .preparing(let step):
+            ProgressView { Text(step).font(.caption) }.tint(.white)
+        case .running(let run):
+            VStack(spacing: 2) {
+                ProgressView { Text(run.step).font(.caption) }.tint(.white)
+                if let item = run.item { Text(item).font(.caption2).foregroundStyle(.white.opacity(0.8)) }
+            }
+            .padding(6)
+            .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
+        case .finished(let run):
+            Label(run.summary, systemImage: run.succeeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .font(.caption.bold())
+                .padding(6)
+                .background((run.succeeded ? Color.green : Color.red).opacity(0.85), in: RoundedRectangle(cornerRadius: 6))
+                .onTapGesture { runner.dismiss() }
+        case .failed(let message):
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption.bold())
+                .multilineTextAlignment(.leading)
+                .padding(6)
+                .background(.red.opacity(0.85), in: RoundedRectangle(cornerRadius: 6))
+                .onTapGesture { runner.dismiss() }
+        }
+    }
+
+    /// Looks for the QR code from `parcel-finder pair` in the camera's view for up to a minute.
+    private func scanForPairing() {
+        guard !scanningForPairing else { return }
+        scanningForPairing = true
+        pairingMessage = "Point the camera at the code from `parcel-finder pair`…"
+        Task {
+            let deadline = Date().addingTimeInterval(60)
+            while Date() < deadline {
+                let found = await Task.detached { () -> String? in
+                    camera.uprightFrame(maxDim: 1600).flatMap(ParcelQR.payload).flatMap(ParcelPairing.token(from:))
+                }.value
+                if let found {
+                    ParcelPairing.save(found)
+                    scanningForPairing = false
+                    pairingMessage = "Paired with parcel-finder"
+                    try? await Task.sleep(for: .seconds(3))
+                    pairingMessage = nil
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+            scanningForPairing = false
+            pairingMessage = nil
         }
     }
 
@@ -181,11 +268,35 @@ struct ContentView: View {
 struct SettingsView: View {
     let finder: HostFinder
     @Binding var hostURL: String
+    let parcelHost: HostFinder
+    /// Close Settings and look for the pairing QR code in the camera's view.
+    var scanPairingCode: () -> Void = {}
     @Environment(\.dismiss) private var dismiss
+    @State private var pasted = ""
+    @State private var paired = ParcelPairing.token != nil
 
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    LabeledContent("Status", value: paired ? "Paired" : "Not paired")
+                    LabeledContent("On this network", value: parcelHost.hosts.isEmpty ? "Not found" : "Found")
+                    Button("Scan pairing code") { scanPairingCode() }
+                    TextField("…or paste the token", text: $pasted)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onSubmit {
+                            if let t = ParcelPairing.token(from: pasted) { ParcelPairing.save(t); paired = true; pasted = "" }
+                        }
+                    if !pasted.isEmpty, ParcelPairing.token(from: pasted) == nil {
+                        Text("That isn't a parcel-finder token.").foregroundStyle(.red)
+                    }
+                    if paired { Button("Forget pairing", role: .destructive) { ParcelPairing.forget(); paired = false } }
+                } header: {
+                    Text("parcel-finder (Open in Claude)")
+                } footer: {
+                    Text("Run `parcel-finder pair` on the Mac, then scan the code it shows. Open in Claude sends the picture and the text read from it to the Mac, which finds the Claude conversation the part was bought in.")
+                }
                 Section {
                     if finder.hosts.isEmpty {
                         Text("None found yet").foregroundStyle(.secondary)
@@ -215,6 +326,33 @@ struct SettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+        }
+    }
+}
+
+/// parcel-finder's pick-list: which conversation was this bought in?
+struct ParcelChoiceView: View {
+    let run: ParcelRun
+    let choose: (String?) -> Void
+
+    var body: some View {
+        NavigationStack {
+            List(run.choices) { c in
+                Button { choose(c.sessionID) } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(c.title).font(.headline)
+                        Text("\(c.when) · \(c.hits) matches").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle(run.item ?? "Which conversation?")
+            .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .top) {
+                Text(run.step).font(.subheadline).padding(.horizontal).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel", role: .cancel) { choose(nil) } }
             }
         }
     }

@@ -2,7 +2,8 @@ import Foundation
 import Network
 import Observation
 
-/// Browses Bonjour for the ScreenEye host (`_screeneye-host._tcp`, TXT `path=/api/frames`).
+/// Browses Bonjour for the ScreenEye host (`_screeneye-host._tcp`, TXT `path=/api/frames`), or
+/// another service type (parcel-finder's `_parcel-finder._tcp`).
 @MainActor @Observable
 final class HostFinder {
     struct Host: Equatable {
@@ -13,10 +14,15 @@ final class HostFinder {
 
     private(set) var hosts: [Host] = []
     private var browser: NWBrowser?
+    let type: String
+
+    init(type: String = "_screeneye-host._tcp") {
+        self.type = type
+    }
 
     func start() {
         guard browser == nil else { return }
-        let b = NWBrowser(for: .bonjourWithTXTRecord(type: "_screeneye-host._tcp", domain: nil), using: .tcp)
+        let b = NWBrowser(for: .bonjourWithTXTRecord(type: type, domain: nil), using: .tcp)
         b.browseResultsChangedHandler = { [weak self] results, _ in
             var seen = Set<String>()  // one result per interface: keep the first of each name
             let found: [Host] = results.compactMap { r in
@@ -40,6 +46,14 @@ final class HostFinder {
         }
         if let url = HostURL.frames(base: manual) { return url }
         throw SaveError.noHost
+    }
+
+    /// `http://address:port` of the first service found over Bonjour.
+    func baseURL() async throws -> URL {
+        guard let host = hosts.first else { throw SaveError.noHost }
+        let (address, port) = try await Self.resolve(host.endpoint)
+        guard let url = HostURL.base(host: address, port: port) else { throw SaveError.noHost }
+        return url
     }
 
     /// Resolves a Bonjour service to an IPv4 address and port by connecting to it.

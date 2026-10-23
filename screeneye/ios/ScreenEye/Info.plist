@@ -27,11 +27,12 @@
 	<array>
 		<string>_screeneye._tcp</string>
 		<string>_screeneye-host._tcp</string>
+		<string>_parcel-finder._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>ScreenEye points the camera at a screen so Claude can read it.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>ScreenEye serves camera snapshots to your Mac on the local network, and saves frames to it.</string>
+	<string>ScreenEye serves camera snapshots to your Mac on the local network, saves frames to it, and sends parts to parcel-finder.</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 </dict>

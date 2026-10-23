@@ -116,6 +116,15 @@ enum HostURL {
         return c.url
     }
 
+    /// `http://host:port`, for a service found over Bonjour.
+    static func base(host: String, port: Int) -> URL? {
+        var c = URLComponents()
+        c.scheme = "http"
+        c.host = host
+        c.port = port
+        return c.url
+    }
+
     /// The frames URL for a host found over Bonjour, with the path from its TXT record.
     static func frames(host: String, port: Int, path: String?) -> URL? {
         var c = URLComponents()
