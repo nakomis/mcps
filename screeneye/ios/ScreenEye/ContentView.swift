@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var runner = ParcelRunner()
     @State private var keyFob = KeyFob()
     @AppStorage(keyFobEnabledKey) private var keyFobEnabled = true
+    @Environment(\.scenePhase) private var scenePhase
     /// Looking for the pairing QR code in the camera's view (started from Settings).
     @State private var scanningForPairing = false
     @State private var pairingMessage: String?
@@ -72,6 +73,7 @@ struct ContentView: View {
             keyFob.setEnabled(keyFobEnabled)
         }
         .onChange(of: keyFobEnabled) { _, on in keyFob.setEnabled(on) }
+        .onChange(of: scenePhase) { _, phase in keyFob.setActive(phase == .active) }
         .sheet(isPresented: $showSettings) {
             SettingsView(finder: finder, hostURL: $hostURL, parcelHost: parcelHost,
                          keyFob: keyFob, keyFobEnabled: $keyFobEnabled) {
@@ -306,7 +308,9 @@ struct SettingsView: View {
                     Toggle("Key fob", isOn: $keyFobEnabled)
                     if keyFobEnabled {
                         LabeledContent("Bluetooth", value: FobNote.radio(keyFob.radio))
-                        LabeledContent("Last press", value: FobNote.lastPress(keyFob.lastPress, now: Date()))
+                        TimelineView(.periodic(from: .now, by: 1)) { t in
+                            LabeledContent("Last press", value: FobNote.lastPress(keyFob.lastPress, now: t.date))
+                        }
                     }
                 } header: {
                     Text("iphone-remote key fob")

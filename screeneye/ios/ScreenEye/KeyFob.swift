@@ -1,6 +1,7 @@
 import CoreBluetooth
 import Foundation
 import Observation
+import os
 
 /// The iphone-remote fob's over-the-air protocol, version 1 (nakomis/iphone-remote
 /// `docs/protocol.md`, IREM-2). A press is an advert from the fob; the ack is an advert from the
@@ -60,21 +61,24 @@ struct PressFilter {
 
 /// The acks waiting to be advertised, one at a time. An ack already waiting or on air isn't
 /// queued twice; once it has been on air, a repeat of the press queues it again (the fob may
-/// have missed it).
+/// have missed it). An ack that has waited longer than `maxAge` is dropped: the fob listens
+/// for 2 s at most, so it would only delay the acks behind it.
 struct AckQueue {
+    var maxAge: TimeInterval = 2
     private(set) var current: UUID?
-    private(set) var waiting: [UUID] = []
+    private(set) var waiting: [(ack: UUID, queued: Date)] = []
 
     /// Queues an ack; true if it was added.
-    @discardableResult mutating func add(_ ack: UUID) -> Bool {
-        guard ack != current, !waiting.contains(ack) else { return false }
-        waiting.append(ack)
+    @discardableResult mutating func add(_ ack: UUID, at now: Date) -> Bool {
+        guard ack != current, !waiting.contains(where: { $0.ack == ack }) else { return false }
+        waiting.append((ack, now))
         return true
     }
 
-    /// Ends the ack on air (if any) and returns the next one to advertise.
-    mutating func next() -> UUID? {
-        current = waiting.isEmpty ? nil : waiting.removeFirst()
+    /// Ends the ack on air (if any) and returns the next one still worth advertising.
+    mutating func next(at now: Date) -> UUID? {
+        waiting.removeAll { now.timeIntervalSince($0.queued) > maxAge }
+        current = waiting.isEmpty ? nil : waiting.removeFirst().ack
         return current
     }
 }
@@ -101,6 +105,9 @@ final class KeyFob: NSObject {
     var onPress: (FobProtocol.Press) -> Void = { _ in }
 
     private var enabled = false
+    /// The app is active (on screen, not covered by Control Centre or the app switcher).
+    private var active = true
+    private let log = Logger(subsystem: "com.nakomis.screeneye", category: "keyfob")
     private var central: CBCentralManager?
     private var peripheral: CBPeripheralManager?
     private var filter = PressFilter()
@@ -118,9 +125,18 @@ final class KeyFob: NSObject {
         updateScan()
     }
 
+    /// Follows the scene: presses are only heard and acted on while the app is active, and the
+    /// scan is started again on return (iOS doesn't promise to resume it).
+    func setActive(_ on: Bool) {
+        active = on
+        updateScan()
+    }
+
+    private var listening: Bool { enabled && active }
+
     private func updateScan() {
         guard let central else { return }
-        if enabled, central.state == .poweredOn {
+        if listening, central.state == .poweredOn {
             central.scanForPeripherals(withServices: [CBUUID(nsuuid: FobProtocol.pressUUID)],
                                        options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
         } else if central.state == .poweredOn {
@@ -129,8 +145,10 @@ final class KeyFob: NSObject {
     }
 
     fileprivate func heard(_ press: FobProtocol.Press, at now: Date = Date()) {
+        // A discovery already queued on the main queue can arrive after the scan was stopped.
+        guard listening else { return }
         let new = filter.isNew(press, at: now)
-        if acks.add(FobProtocol.ackUUID(for: press)) { advertiseAcks() }
+        if acks.add(FobProtocol.ackUUID(for: press), at: now) { advertiseAcks() }
         if new {
             lastPress = Seen(press: press, at: now)
             onPress(press)
@@ -141,7 +159,7 @@ final class KeyFob: NSObject {
     private func advertiseAcks() {
         guard acking == nil, let peripheral, peripheral.state == .poweredOn else { return }
         acking = Task { @MainActor in
-            while let ack = acks.next() {
+            while let ack = acks.next(at: Date()) {
                 // No local name and exactly one UUID, so it fits the primary advert packet.
                 peripheral.startAdvertising([CBAdvertisementDataServiceUUIDsKey: [CBUUID(nsuuid: ack)]])
                 try? await Task.sleep(for: Self.ackDuration)
@@ -181,6 +199,12 @@ extension KeyFob: CBPeripheralManagerDelegate {
     nonisolated func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
         let on = peripheral.state == .poweredOn
         MainActor.assumeIsolated { if on { advertiseAcks() } }
+    }
+
+    nonisolated func peripheralManagerDidStartAdvertising(_ peripheral: CBPeripheralManager, error: Error?) {
+        guard let error else { return }
+        let message = error.localizedDescription
+        MainActor.assumeIsolated { log.error("ack advert failed: \(message, privacy: .public)") }
     }
 }
 

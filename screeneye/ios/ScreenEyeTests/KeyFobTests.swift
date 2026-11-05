@@ -84,24 +84,33 @@ final class PressFilterTests: XCTestCase {
 
 final class AckQueueTests: XCTestCase {
     private let a = UUID(), b = UUID()
+    private let t0 = Date(timeIntervalSince1970: 1_000_000)
 
     func testOneAtATimeInOrder() {
         var q = AckQueue()
-        XCTAssertTrue(q.add(a)); XCTAssertTrue(q.add(b))
-        XCTAssertEqual(q.next(), a)
-        XCTAssertEqual(q.next(), b)
-        XCTAssertNil(q.next())
+        XCTAssertTrue(q.add(a, at: t0)); XCTAssertTrue(q.add(b, at: t0))
+        XCTAssertEqual(q.next(at: t0), a)
+        XCTAssertEqual(q.next(at: t0 + 0.15), b)
+        XCTAssertNil(q.next(at: t0 + 0.3))
         XCTAssertNil(q.current)
     }
 
     func testNotQueuedTwiceWhileWaitingOrOnAir() {
         var q = AckQueue()
-        XCTAssertTrue(q.add(a))
-        XCTAssertFalse(q.add(a))       // waiting
-        _ = q.next()
-        XCTAssertFalse(q.add(a))       // on air
-        _ = q.next()
-        XCTAssertTrue(q.add(a))        // done: a repeat of the press acks again
+        XCTAssertTrue(q.add(a, at: t0))
+        XCTAssertFalse(q.add(a, at: t0))       // waiting
+        _ = q.next(at: t0)
+        XCTAssertFalse(q.add(a, at: t0))       // on air
+        _ = q.next(at: t0 + 0.15)
+        XCTAssertTrue(q.add(a, at: t0 + 0.2))  // done: a repeat of the press acks again
+    }
+
+    func testStaleAcksAreDropped() {
+        var q = AckQueue()
+        q.add(a, at: t0)                       // e.g. queued while the radio was off
+        q.add(b, at: t0 + 1.5)
+        XCTAssertEqual(q.next(at: t0 + 2.5), b)
+        XCTAssertNil(q.next(at: t0 + 2.65))
     }
 }
 
