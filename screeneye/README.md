@@ -81,6 +81,15 @@ and `viewport` all agree with the picture it returns.
   each step, and the pick-list when the conversation isn't clear. parcel-finder is found over
   Bonjour (`_parcel-finder._tcp`). Pair once: run `parcel-finder pair` on the Mac, then
   Settings → Scan pairing code (or paste the token). The token is kept in the phone's keychain.
+- **Key fob:** an [iphone-remote](https://github.com/nakomis/iphone-remote) fob press does
+  the same as tapping Save, while the app is open on screen. The app scans for the fob's
+  press advert, answers each new press with an ack advert straight away (the fob's LED
+  flashes), then saves. The note is the one typed, else `fob N`, so the file says which fob
+  took it. A press during an upload is acked but dropped. Settings has a switch (on by
+  default) and shows the last fob heard, with its cell voltage. The protocol is iphone-remote's
+  [`docs/protocol.md`](https://github.com/nakomis/iphone-remote/blob/main/docs/protocol.md);
+  the code is `ios/ScreenEye/KeyFob.swift`. iOS only lets a foreground app's ack reach the fob,
+  so with the phone locked or ScreenEye in the background, presses aren't heard at all.
 - **Save** (to Mac): pushes what's on screen at full resolution (the same image as
   `/snapshot.jpg`), with the camera state and an optional note, to the ScreenEye
   host. The host is found over Bonjour (`_screeneye-host._tcp`, TXT

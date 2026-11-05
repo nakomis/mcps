@@ -18,6 +18,7 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_NSCameraUsageDescription: "ScreenEye points the camera at a screen so Claude can read it."
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: "ScreenEye serves camera snapshots to your Mac on the local network, saves frames to it, and sends parts to parcel-finder."
+        INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription: "ScreenEye listens for your iphone-remote key fob, so a press saves the picture, and answers it so the fob's light flashes."
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown"
@@ -32,6 +33,7 @@ targets:
           NSAllowsLocalNetworking: true
         NSCameraUsageDescription: "ScreenEye points the camera at a screen so Claude can read it."
         NSLocalNetworkUsageDescription: "ScreenEye serves camera snapshots to your Mac on the local network, saves frames to it, and sends parts to parcel-finder."
+        NSBluetoothAlwaysUsageDescription: "ScreenEye listens for your iphone-remote key fob, so a press saves the picture, and answers it so the fob's light flashes."
         UILaunchScreen: {}
   ScreenEyeTests:
     type: bundle.unit-test

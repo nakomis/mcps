@@ -3,6 +3,8 @@ import UIKit
 
 /// The UserDefaults key for the host address typed in Settings.
 let hostURLKey = "hostURL"
+/// The UserDefaults key for Settings' Key fob switch.
+let keyFobEnabledKey = "keyFobEnabled"
 
 struct ContentView: View {
     let camera: Camera
@@ -10,6 +12,8 @@ struct ContentView: View {
     @State private var saver = Saver()
     @State private var parcelHost = HostFinder(type: "_parcel-finder._tcp")
     @State private var runner = ParcelRunner()
+    @State private var keyFob = KeyFob()
+    @AppStorage(keyFobEnabledKey) private var keyFobEnabled = true
     /// Looking for the pairing QR code in the camera's view (started from Settings).
     @State private var scanningForPairing = false
     @State private var pairingMessage: String?
@@ -62,9 +66,15 @@ struct ContentView: View {
             .foregroundStyle(.white)
         }
         .background(.black)
-        .onAppear { finder.start(); parcelHost.start() }
+        .onAppear {
+            finder.start(); parcelHost.start()
+            keyFob.onPress = { press in fobPressed(press) }
+            keyFob.setEnabled(keyFobEnabled)
+        }
+        .onChange(of: keyFobEnabled) { _, on in keyFob.setEnabled(on) }
         .sheet(isPresented: $showSettings) {
-            SettingsView(finder: finder, hostURL: $hostURL, parcelHost: parcelHost) {
+            SettingsView(finder: finder, hostURL: $hostURL, parcelHost: parcelHost,
+                         keyFob: keyFob, keyFobEnabled: $keyFobEnabled) {
                 showSettings = false
                 scanForPairing()
             }
@@ -183,6 +193,14 @@ struct ContentView: View {
         }
     }
 
+    /// A key fob press does what tapping Save does. Its note is the one typed, else "fob N", so
+    /// the saved file says which fob took it. A press while a save is uploading is dropped (the
+    /// fob has still been acked).
+    private func fobPressed(_ press: FobProtocol.Press) {
+        saver.save(camera: camera, finder: finder, note: FobNote.note(typed: note, fobID: press.fobID),
+                   manualURL: hostURL, device: UIDevice.current.name)
+    }
+
     // MARK: Open in Claude
 
     @ViewBuilder private var parcelStatus: some View {
@@ -273,6 +291,8 @@ struct SettingsView: View {
     let finder: HostFinder
     @Binding var hostURL: String
     let parcelHost: HostFinder
+    let keyFob: KeyFob
+    @Binding var keyFobEnabled: Bool
     /// Close Settings and look for the pairing QR code in the camera's view.
     var scanPairingCode: () -> Void = {}
     @Environment(\.dismiss) private var dismiss
@@ -282,6 +302,17 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Toggle("Key fob", isOn: $keyFobEnabled)
+                    if keyFobEnabled {
+                        LabeledContent("Bluetooth", value: FobNote.radio(keyFob.radio))
+                        LabeledContent("Last press", value: FobNote.lastPress(keyFob.lastPress, now: Date()))
+                    }
+                } header: {
+                    Text("iphone-remote key fob")
+                } footer: {
+                    Text("A fob press saves, the same as tapping Save, while ScreenEye is open on screen. The fob's LED flashes when the phone has heard it.")
+                }
                 Section {
                     LabeledContent("Status", value: paired ? "Paired" : "Not paired")
                     LabeledContent("On this network", value: parcelHost.hosts.isEmpty ? "Not found" : "Found")
