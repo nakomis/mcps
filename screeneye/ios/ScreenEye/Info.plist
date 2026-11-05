@@ -23,6 +23,8 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>ScreenEye listens for your iphone-remote key fob, so a press saves the picture, and answers it so the fob's light flashes.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_screeneye._tcp</string>
