@@ -6,7 +6,7 @@ from midichlorian.config import load_settings
 
 BASE = {
     "MIDICHLORIAN_INSTANCE": "cere",
-    "MIDICHLORIAN_SERVED": "luke,leia",
+    "MIDICHLORIAN_SERVED": "cal,rey",
     "MIDICHLORIAN_DATA_DIR": "/d",
     "MIDICHLORIAN_REPO_DIR": "/r",
     "MIDICHLORIAN_TOKEN": "t",
@@ -18,7 +18,7 @@ def test_defaults_and_parsing():
         {**BASE, "MIDICHLORIAN_PEERS": "mace=http://mace.local:9140, x=http://x"}
     )
     assert s.instance == "cere"
-    assert s.served == frozenset({"luke", "leia"})
+    assert s.served == frozenset({"cal", "rey"})
     assert s.data_dir == Path("/d") and s.repo_dir == Path("/r")
     assert s.repo_url == "https://github.com/nakomis/home-infra.git"
     assert s.peers == {"mace": "http://mace.local:9140", "x": "http://x"}
@@ -49,8 +49,8 @@ def test_missing_required():
 
 
 def test_served_names_must_be_known_hosts():
-    with pytest.raises(ValueError, match="unknown hosts in MIDICHLORIAN_SERVED: luek"):
-        load_settings({**BASE, "MIDICHLORIAN_SERVED": "luek,leia"})
+    with pytest.raises(ValueError, match="unknown hosts in MIDICHLORIAN_SERVED: cel"):
+        load_settings({**BASE, "MIDICHLORIAN_SERVED": "cel,rey"})
 
 
 def test_peer_names_need_not_be_hosts():

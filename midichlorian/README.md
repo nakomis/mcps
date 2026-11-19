@@ -15,9 +15,9 @@ Two entry points:
 
 ## Architecture
 
-One server instance, on mace, serves `luke`, `leia`, `cal`, `rey`, `cere` and the
+One server instance, on mace, serves `cal`, `rey`, `cere` and the
 web UI. It builds the controller-side images with mace's own Docker daemon, so the
-Docker, printer, AWS and Luke backup gates all run there.
+Docker, printer and AWS gates all run there.
 
 No host ever runs its own playbook, so `mace` itself is not served: it runs
 midichlorian, and is deployed by hand from the workstation. Asking the MCP to
@@ -54,7 +54,6 @@ Read by `midichlorian-server` (`config.py`, `api.py`, `runner.py`).
 | `MIDICHLORIAN_DRAIN_ON_SHUTDOWN` | no | `1` to wait for running playbooks on SIGTERM before exiting (for a container, where exit would kill them); see Safety rules. Default off |
 | `MIDICHLORIAN_BIND` | no | Listen address (default `0.0.0.0`) |
 | `MIDICHLORIAN_PORT` | no | Listen port (default `9140`) |
-| `MIDICHLORIAN_OCTOPRINT_KEY` | no | OctoPrint API key for the printer-busy check; if unset it is read from SSM. If neither yields a key, it is asked for again at most every 5 minutes; until then, while OctoPrint's container is running, the Prusa's state is unreadable and Leia's runs wait |
 | `MIDICHLORIAN_CTHULHU_URL` | no | Cthulhu's status endpoint for the resin printer check (default `http://rey.local:9120/api/status`). If it cannot be reached, Rey's runs are not held, so check it resolves from the coordinating host |
 | `GH_TOKEN` | no | Not read by name: the server's environment is inherited by gates and playbook runs, so a GitHub token set here is what git uses |
 | `AWS_CONFIG_FILE` | no | Not read by name: inherited by the SSM reads and playbook runs like the rest of the environment |
@@ -78,7 +77,7 @@ A throwaway dev instance with temporary directories:
 
 ```sh
 cd midichlorian
-export MIDICHLORIAN_INSTANCE=dev MIDICHLORIAN_SERVED=luke \
+export MIDICHLORIAN_INSTANCE=dev MIDICHLORIAN_SERVED=cal \
   MIDICHLORIAN_DATA_DIR=$(mktemp -d) MIDICHLORIAN_REPO_DIR=$(mktemp -d) \
   MIDICHLORIAN_TOKEN=$(openssl rand -hex 32) MIDICHLORIAN_BIND=127.0.0.1
 uv run midichlorian-server
@@ -97,18 +96,11 @@ cd midichlorian && uv run pytest -q
 
 - Deploys come only from commits on `origin/main` of home-infra. The server
   fetches before checking, so a commit newer than its clone is accepted.
-- Nothing runs against a printer-sensitive target (`rey`, `leia` and `luke`) while
-  a 3D print is in progress; the run waits. Every Luke run holds, full or tagged,
-  because many Luke tags (`volatile-fs`, `print-recordings`, Docker restarts)
-  bounce Samba and stale the print-recording mounts. The only exception is a run
-  whose tags are all in `LUKE_HOLD_FREE_TAGS` (`hosts.py`), which is empty until
-  a tag has been checked not to touch Samba, volatile-fs, print-recordings or
-  Docker. A printer that
-  cannot be reached (connection refused or timed out, ssh down, OctoPrint's
-  container not running) is treated as idle, with a note. A printer that answers
-  but whose state cannot be read (no or wrong OctoPrint key, an HTTP error, junk)
-  holds the run as if busy ("state unreadable") until it can be read or Martin
-  overrides.
+- Nothing runs against a printer-sensitive target (`rey`) while a 3D print is in
+  progress; the run waits. A printer that cannot be reached (connection refused
+  or timed out) is treated as idle, with a note. A printer that answers but
+  whose state cannot be read (an HTTP error, junk) holds the run as if busy
+  ("state unreadable") until it can be read or Martin overrides.
 - `override_printer` bypasses that hold. A session sets it only when Martin has
   explicitly said so in that session.
 - A running playbook is never interrupted by midichlorian. Only queued or waiting

@@ -8,7 +8,7 @@ from midichlorian.scheduler import (
 from midichlorian.store import Job
 
 
-def job(id, host="luke", state="queued", request=1, position=0, tags=None):
+def job(id, host="rey", state="queued", request=1, position=0, tags=None):
     return Job(
         id=id,
         request_id=request,
@@ -22,7 +22,7 @@ def job(id, host="luke", state="queued", request=1, position=0, tags=None):
 
 
 def chain(*states, request=1, start=1):
-    hosts = ["luke", "leia", "mace"]
+    hosts = ["rey", "cal", "mace"]
     return [job(start + i, hosts[i], s, request, i) for i, s in enumerate(states)]
 
 
@@ -40,19 +40,19 @@ def test_covers():
 
 
 def test_merge_into_queued_not_running():
-    assert merge_target([job(1, state="running")], "luke", None) is None
-    assert merge_target([job(1, state="queued")], "luke", None).id == 1
-    assert merge_target([job(1, state="waiting")], "luke", ["x"]).id == 1
+    assert merge_target([job(1, state="running")], "rey", None) is None
+    assert merge_target([job(1, state="queued")], "rey", None).id == 1
+    assert merge_target([job(1, state="waiting")], "rey", ["x"]).id == 1
 
 
 def test_merge_oldest_position_zero_same_host_only():
     jobs = [
-        job(1, host="leia"),
+        job(1, host="cal"),
         job(2, request=2, position=1),
         job(4),
         job(3),
     ]
-    assert merge_target(jobs, "luke", None).id == 3
+    assert merge_target(jobs, "rey", None).id == 3
     assert merge_target(jobs, "mace", None) is None
 
 
@@ -90,7 +90,7 @@ def test_failed_earlier_skips_later():
 
 
 def test_skipped_job_does_not_block_other_request_on_host():
-    jobs = chain("failed", "queued", request=1) + [job(10, host="leia", request=2)]
+    jobs = chain("failed", "queued", request=1) + [job(10, host="cal", request=2)]
     runnable, skip = next_runnable(jobs)
     assert ids(runnable) == [10] and ids(skip) == [2]
 
@@ -113,25 +113,25 @@ def test_waiting_job_at_later_position():
 
 
 def test_merge_target_empty_and_ignores_later_position():
-    assert merge_target([], "luke", None) is None
-    assert merge_target([job(1, position=1)], "luke", None) is None
+    assert merge_target([], "rey", None) is None
+    assert merge_target([job(1, position=1)], "rey", None) is None
 
 
 def test_fifo_among_eligible_blocked_lower_id_does_not_block():
-    blocked = job(1, host="leia", request=1, position=1)
-    first = job(0, host="luke", request=1, position=0, state="running")
-    other = job(5, host="leia", request=2)
+    blocked = job(1, host="cal", request=1, position=1)
+    first = job(0, host="rey", request=1, position=0, state="running")
+    other = job(5, host="cal", request=2)
     runnable, _ = next_runnable([first, blocked, other])
     assert ids(runnable) == [5]
 
 
-def printer_held(id, host="leia", request=1):
+def printer_held(id, host="cal", request=1):
     j = job(id, host, "waiting", request)
     j.detail = {"gate": "printer busy — Cthulhu: Exposure"}
     return j
 
 
-def override(id, host="leia", request=2, state="queued"):
+def override(id, host="cal", request=2, state="queued"):
     j = job(id, host, state, request)
     j.override_printer = True
     return j
@@ -149,12 +149,12 @@ def test_only_one_override_passes_and_only_a_printer_hold():
     peer_held.detail = {"gate": "peer mace has a running job"}
     runnable, _ = next_runnable([peer_held, override(2, host="mace")])
     assert ids(runnable) == [1]
-    runnable, _ = next_runnable([job(1, "leia", "queued"), override(2)])
+    runnable, _ = next_runnable([job(1, "cal", "queued"), override(2)])
     assert ids(runnable) == [1]  # a merely queued head is not passed
 
 
 def test_override_never_passes_a_running_job():
-    runnable, _ = next_runnable([job(1, "leia", "running"), override(2)])
+    runnable, _ = next_runnable([job(1, "cal", "running"), override(2)])
     assert runnable == []
 
 
@@ -201,7 +201,7 @@ def test_coverage_running_job_started_after_request_covers():
 
 
 def test_coverage_other_host_not_covered():
-    assert coverage([cj(1, host="leia"), cj(2, host="luke")]) == {}
+    assert coverage([cj(1, host="cal"), cj(2, host="rey")]) == {}
 
 
 def test_coverage_earliest_of_several_wins():
@@ -227,10 +227,10 @@ def test_deploys():
 
 
 def test_coverage_later_host_needs_x_started_after_its_first_host():
-    # 22 Oct 2026: #6 luke started 13:29:55, then request 22's leia (#12) started
+    # 22 Oct 2026: #6 rey started 13:29:55, then request 22's cal (#12) started
     # at 13:33:02 and may deploy a newer main than #6 did, so #13 is not covered.
     x = cj(6, state="running", started="2026-10-22T13:29:55Z", request=7)
-    head = cj(12, host="leia", state="running", request=22, started="2026-10-22T13:33:02Z",
+    head = cj(12, host="cal", state="running", request=22, started="2026-10-22T13:33:02Z",
               created="2026-10-22T10:52:23Z")
     y = cj(13, request=22, position=1, created="2026-10-22T10:52:23Z")
     assert coverage([x, head, y]) == {}
@@ -239,7 +239,7 @@ def test_coverage_later_host_needs_x_started_after_its_first_host():
 
 
 def test_coverage_later_host_with_unstarted_x_is_covered():
-    head = cj(12, host="leia", state="waiting", request=22)
+    head = cj(12, host="cal", state="waiting", request=22)
     y = cj(13, request=22, position=1)
     assert coverage([cj(6, state="waiting", request=7), head, y]) == {13: 6}
 

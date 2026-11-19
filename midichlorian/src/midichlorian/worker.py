@@ -418,7 +418,7 @@ class Coordinator:
         """Hosts where an interrupted job's playbook is still running: host -> pid.
 
         A restart leaves such a playbook going (R27); a new run beside it would be
-        two playbooks on one host (on Luke, inside the rw window). Only the playbooks
+        two playbooks on one host (on a read-only host, inside the rw window). Only the playbooks
         found alive at start-up are watched (each pass), not every interrupted job
         ever recorded, and the process check runs off the event loop.
         """
@@ -582,20 +582,6 @@ class Coordinator:
                     job_id, "failed", f"Docker gate: {docker.reason}"
                 )
             self._note(job, "Docker ok")
-        if host.needs_backup_gate:
-            if (
-                self._pending(job_id) is None
-            ):  # cancelled: don't hold Luke for its backups
-                return
-            self._note(job, "running Luke's backups")
-            backups = await self.gates.run_luke_backups(self.ssh)
-            if not backups.ok:
-                return self._end_pending(job_id, "failed", backups.reason)
-            self._note(job, "Luke's backups ok")
-            # They can take half an hour: a print may have started meanwhile. If so,
-            # wait; the backups simply run again before the eventual run.
-            if await self._held_by_printers(job_id, job):
-                return
         if await self._held_by_peer(job_id, job):
             return
 
@@ -694,14 +680,7 @@ class Coordinator:
             self._note(job, cleanup)
 
         result = recap.parse(log.read_text(encoding="utf-8", errors="replace"))
-        rey_printing = False
-        if host.name == "luke":
-            rey_printing = any(
-                s.name == "cthulhu" and s.busy for s in await self.probes.states()
-            )
-        checks = await verify.run_checks(
-            host, before, self.ssh, rey_printing=rey_printing
-        )
+        checks = await verify.run_checks(host, before, self.ssh)
         detail = {
             "deployed_sha": head,
             "recap": asdict(result),
