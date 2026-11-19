@@ -12,7 +12,6 @@ from fastapi.testclient import TestClient
 from midichlorian import api
 from midichlorian.config import Settings
 from midichlorian.printers import PrinterState
-from midichlorian.remote import RunResult
 from midichlorian.store import Store
 from midichlorian.worker import SubmitResult
 
@@ -30,8 +29,7 @@ class FakeProbes:
         if self.fail:
             raise RuntimeError("boom")
         return [
-            PrinterState("cthulhu", False, "Cthulhu: Idle", True),
-            PrinterState("octoprint", True, "Prusa: Printing", True),
+            PrinterState("cthulhu", True, "Cthulhu: Exposure", True),
         ]
 
 
@@ -68,7 +66,7 @@ class FakeCoordinator:
 def settings(tmp_path, peers=None):
     return Settings(
         instance="cere",
-        served=frozenset({"luke", "leia", "cal", "mace", "rey"}),
+        served=frozenset({"cal", "mace", "rey"}),
         data_dir=tmp_path,
         repo_dir=tmp_path / "repo",
         repo_url="x",
@@ -157,7 +155,7 @@ def solo(tmp_path, store, web):
         yield tc, coord, store
 
 
-def make_job(store, host="luke", state="queued", tags=None, **fields):
+def make_job(store, host="rey", state="queued", tags=None, **fields):
     rid = store.create_request([host], SHA, tags, False, "martin")
     job = store.add_job(rid, host, SHA, tags, 0, False, "martin")
     if state != "queued" or fields:
@@ -224,7 +222,7 @@ def test_info(solo):
     tc, _, _ = solo
     body = tc.get("/api/info").json()
     assert body["instance"] == "cere"
-    assert body["served"] == ["cal", "leia", "luke", "mace", "rey"]
+    assert body["served"] == ["cal", "mace", "rey"]
     assert body["version"]
 
 
@@ -259,23 +257,23 @@ def test_no_token_in_logs(solo, caplog):
 
 def test_hosts_local_fields(solo):
     tc, _coord, store = solo
-    store.record_deploy("luke", SHA, None, "2026-10-19T08:00:00Z")
-    make_job(store, "luke", "succeeded", finished="2026-10-19T08:00:00Z")
-    running = make_job(store, "luke", "running", started="2026-10-19T09:00:00Z")
-    make_job(store, "luke", "queued")
-    make_job(store, "luke", "waiting")
+    store.record_deploy("rey", SHA, None, "2026-10-19T08:00:00Z")
+    make_job(store, "rey", "succeeded", finished="2026-10-19T08:00:00Z")
+    running = make_job(store, "rey", "running", started="2026-10-19T09:00:00Z")
+    make_job(store, "rey", "queued")
+    make_job(store, "rey", "waiting")
     body = tc.get("/api/hosts").json()
     by = {h["name"]: h for h in body["hosts"]}
-    assert set(by) == {"luke", "leia", "cal", "mace", "rey"}
-    luke = by["luke"]
-    assert luke["served_by"] == "cere"
-    assert luke["deployed"]["full"]["sha"] == SHA
-    assert luke["running"] == running.id
-    assert luke["queued"] == 2
-    assert luke["last"]["state"] == "succeeded"
-    assert luke["gates"]["printers"][1]["busy"] is True
-    assert luke["gates"]["printer_sensitive"] == "samba"
-    assert luke["gates"]["luke_backups"] == "not reported in v1"
+    assert set(by) == {"cal", "mace", "rey"}
+    rey = by["rey"]
+    assert rey["served_by"] == "cere"
+    assert rey["deployed"]["full"]["sha"] == SHA
+    assert rey["running"] == running.id
+    assert rey["queued"] == 2
+    assert rey["last"]["state"] == "succeeded"
+    assert rey["gates"]["printers"][0]["busy"] is True
+    assert rey["gates"]["printer_sensitive"] == "always"
+    assert set(rey["gates"]) == {"printer_sensitive", "printers"}
     assert by["cal"]["running"] is None and by["cal"]["last"] is None
     assert body["peers_unreachable"] == []
 
@@ -306,7 +304,7 @@ def test_hosts_merge_peer(env):
     tc, _, peer, _ = env
     body = tc.get("/api/hosts").json()
     names = [h["name"] for h in body["hosts"]]
-    assert "cere" in names and "luke" in names
+    assert "cere" in names and "rey" in names
     cere = next(h for h in body["hosts"] if h["name"] == "cere")
     assert cere["served_by"] == "mace"
     assert body["peers_unreachable"] == []
@@ -319,7 +317,7 @@ def test_hosts_peer_down_gives_partial(env):
     tc, _, peer, _ = env
     peer.down = True
     body = tc.get("/api/hosts").json()
-    assert {h["name"] for h in body["hosts"]} == {"luke", "leia", "cal", "mace", "rey"}
+    assert {h["name"] for h in body["hosts"]} == {"cal", "mace", "rey"}
     assert body["peers_unreachable"] == ["mace"]
 
 
@@ -354,9 +352,9 @@ def test_local_param_suppresses_peer_fan_out(env):
 
 def test_queue_lists_active_jobs_with_instance(solo):
     tc, _, store = solo
-    make_job(store, "luke", "succeeded", finished="2026-10-19T08:00:00Z")
+    make_job(store, "rey", "succeeded", finished="2026-10-19T08:00:00Z")
     r = make_job(store, "cal", "running")
-    q = make_job(store, "leia", "queued")
+    q = make_job(store, "cal", "queued")
     w = make_job(store, "rey", "waiting")
     body = tc.get("/api/queue").json()
     assert [j["id"] for j in body["jobs"]] == [r.id, q.id, w.id]
@@ -365,10 +363,10 @@ def test_queue_lists_active_jobs_with_instance(solo):
 
 def test_queue_and_runs_carry_coverage_fields(solo):
     tc, _, store = solo
-    x = make_job(store, "leia", "waiting")
-    y = make_job(store, "leia", "queued")
-    pinned = make_job(store, "luke", "queued", detail={"pinned_sha": SHA})
-    done = make_job(store, "luke", "succeeded")
+    x = make_job(store, "cal", "waiting")
+    y = make_job(store, "cal", "queued")
+    pinned = make_job(store, "rey", "queued", detail={"pinned_sha": SHA})
+    done = make_job(store, "rey", "succeeded")
     jobs = {j["id"]: j for j in tc.get("/api/queue").json()["jobs"]}
     assert jobs[x.id]["covers"] == [y.id] and jobs[x.id]["covered_by"] is None
     assert jobs[x.id]["deploys"] == "main@start"
@@ -382,20 +380,20 @@ def test_queue_and_runs_carry_coverage_fields(solo):
 
 def test_runs_newest_first_filter_and_limit(solo):
     tc, _, store = solo
-    a = make_job(store, "luke", "succeeded")
+    a = make_job(store, "rey", "succeeded")
     b = make_job(store, "cal", "failed")
-    c = make_job(store, "luke", "failed")
+    c = make_job(store, "rey", "failed")
     ids = [r["id"] for r in tc.get("/api/runs").json()["runs"]]
     assert ids == [c.id, b.id, a.id]
-    assert [r["id"] for r in tc.get("/api/runs", params={"host": "luke"}).json()["runs"]] == [c.id, a.id]
+    assert [r["id"] for r in tc.get("/api/runs", params={"host": "rey"}).json()["runs"]] == [c.id, a.id]
     assert [r["id"] for r in tc.get("/api/runs", params={"limit": 1}).json()["runs"]] == [c.id]
     run = tc.get("/api/runs").json()["runs"][0]
-    assert run["instance"] == "cere" and run["host"] == "luke" and run["requesters"] == ["martin"]
+    assert run["instance"] == "cere" and run["host"] == "rey" and run["requesters"] == ["martin"]
 
 
 def test_runs_merge_peer_newest_first(env):
     tc, _, peer, store = env
-    job = make_job(store, "luke", "succeeded")
+    job = make_job(store, "rey", "succeeded")
     store.set_state(job.id, "succeeded", finished="x")
     body = tc.get("/api/runs", params={"limit": 10}).json()
     # the local job was created "now" (2026+), the peer's is 2026-10-19T09:00 -> compare by created
@@ -408,7 +406,7 @@ def test_runs_merge_peer_newest_first(env):
 
 def test_runs_peer_down_partial(env):
     tc, _, peer, store = env
-    make_job(store, "luke", "succeeded")
+    make_job(store, "rey", "succeeded")
     peer.down = True
     body = tc.get("/api/runs").json()
     assert len(body["runs"]) == 1
@@ -417,7 +415,7 @@ def test_runs_peer_down_partial(env):
 
 def test_run_detail_and_404(solo):
     tc, _, store = solo
-    job = make_job(store, "luke", "failed", detail={"checks": [{"name": "x", "ok": False}]})
+    job = make_job(store, "rey", "failed", detail={"checks": [{"name": "x", "ok": False}]})
     body = tc.get(f"/api/runs/{job.id}").json()
     assert body["id"] == job.id and body["instance"] == "cere"
     assert body["detail"]["checks"][0]["name"] == "x"
@@ -445,7 +443,7 @@ def test_instance_param_proxies_to_peer(env):
 
 def test_instance_param_own_name_is_local(env):
     tc, _, peer, store = env
-    job = make_job(store, "luke", "failed")
+    job = make_job(store, "rey", "failed")
     assert tc.get(f"/api/runs/{job.id}", params={"instance": "cere"}).json()["id"] == job.id
     assert peer.requests == []
 
@@ -467,7 +465,7 @@ def test_follow_with_instance_is_refused(env):
 
 def test_cancel_queued_job(solo):
     tc, _, store = solo
-    job = make_job(store, "luke", "queued")
+    job = make_job(store, "rey", "queued")
     resp = tc.post(f"/api/runs/{job.id}/cancel")
     assert resp.status_code == 200
     assert resp.json()["state"] == "cancelled" and resp.json()["instance"] == "cere"
@@ -475,7 +473,7 @@ def test_cancel_queued_job(solo):
 
 def test_cancel_running_is_409(solo):
     tc, _, store = solo
-    job = make_job(store, "luke", "running")
+    job = make_job(store, "rey", "running")
     resp = tc.post(f"/api/runs/{job.id}/cancel")
     assert resp.status_code == 409
     assert store.get_job(job.id).state == "running"
@@ -499,7 +497,7 @@ def test_cancel_proxies_and_passes_status_through(env):
 def log_job(store, tmp_path, content: bytes, state="succeeded"):
     log = tmp_path / "1.log"
     log.write_bytes(content)
-    return make_job(store, "luke", state, log_path=str(log))
+    return make_job(store, "rey", state, log_path=str(log))
 
 
 def test_log_paging(solo, tmp_path):
@@ -533,7 +531,7 @@ def test_log_page_is_capped_at_a_line_boundary(solo, tmp_path, monkeypatch):
 
 def test_log_without_file_is_empty(solo):
     tc, _, store = solo
-    job = make_job(store, "luke", "queued")
+    job = make_job(store, "rey", "queued")
     assert tc.get(f"/api/runs/{job.id}/log").json() == {"text": "", "next": 0}
     assert tc.get("/api/runs/9999/log").status_code == 404
 
@@ -627,18 +625,18 @@ def test_follow_unknown_run_is_404(solo):
 
 
 def deploy(tc, **over):
-    body = {"hosts": ["luke"], "sha": "main", "requester": "martin", **over}
+    body = {"hosts": ["rey"], "sha": "main", "requester": "martin", **over}
     return tc.post("/api/deploy", json=body)
 
 
 def test_deploy_submits_and_returns_the_result(solo):
     tc, coord, _ = solo
-    resp = deploy(tc, hosts=["luke", "cal"], tags=["samba"], override_printer=True)
+    resp = deploy(tc, hosts=["rey", "cal"], tags=["web"], override_printer=True)
     assert resp.status_code == 200
     body = resp.json()
     assert body["request_id"] == 7
-    assert [j["host"] for j in body["jobs"]] == ["luke", "cal"]
-    assert coord.submitted == [(["luke", "cal"], "main", ["samba"], True, "martin")]
+    assert [j["host"] for j in body["jobs"]] == ["rey", "cal"]
+    assert coord.submitted == [(["rey", "cal"], "main", ["web"], True, "martin")]
 
 
 def test_deploy_override_printer_defaults_false(solo):
@@ -650,7 +648,7 @@ def test_deploy_override_printer_defaults_false(solo):
 
 def test_deploy_unknown_hosts_400_names_them(solo):
     tc, coord, _ = solo
-    resp = deploy(tc, hosts=["luke", "tatooine", "dagobah"])
+    resp = deploy(tc, hosts=["rey", "tatooine", "dagobah"])
     assert resp.status_code == 400
     assert "tatooine" in resp.json()["detail"] and "dagobah" in resp.json()["detail"]
     assert coord.submitted == []
@@ -660,7 +658,7 @@ def test_deploy_requires_non_empty_requester(solo):
     tc, coord, _ = solo
     assert deploy(tc, requester="").status_code == 400
     assert deploy(tc, requester="   ").status_code == 400
-    assert tc.post("/api/deploy", json={"hosts": ["luke"], "sha": "main"}).status_code == 422
+    assert tc.post("/api/deploy", json={"hosts": ["rey"], "sha": "main"}).status_code == 422
     assert coord.submitted == []
 
 
@@ -677,7 +675,7 @@ def test_deploy_unserved_host_names_serving_instance(env):
 
 def test_deploy_mixed_instances_400(env):
     tc, coord, _, _ = env
-    resp = deploy(tc, hosts=["luke", "cere"])
+    resp = deploy(tc, hosts=["rey", "cere"])
     assert resp.status_code == 400
     assert "mace" in resp.json()["detail"] and "cere" in resp.json()["detail"]
     assert coord.submitted == []
@@ -705,45 +703,6 @@ def test_deploy_coordinator_value_error_is_400(solo):
 
 
 # --- main helpers --------------------------------------------------------------------
-
-
-async def test_octoprint_key_from_env():
-    async def run(*a, **k):
-        raise AssertionError("must not call aws")
-
-    assert await api.resolve_octoprint_key({"MIDICHLORIAN_OCTOPRINT_KEY": "k1"}, run=run) == "k1"
-
-
-async def test_octoprint_key_from_ssm():
-    seen = {}
-
-    async def run(argv, timeout=60, env=None, stdin=None):
-        seen.update(argv=argv, env=env)
-        return RunResult(0, "secretkey\n", "")
-
-    env = {"AWS_CONFIG_FILE": "/x/config"}
-    assert await api.resolve_octoprint_key(env, run=run) == "secretkey"
-    assert seen["argv"][:3] == ["aws", "ssm", "get-parameter"]
-    assert "/octoprint/api-key" in seen["argv"] and "--with-decryption" in seen["argv"]
-    assert seen["argv"][seen["argv"].index("--profile") + 1] == "nakom.is-admin"
-    assert seen["argv"][seen["argv"].index("--region") + 1] == "eu-west-2"
-    assert seen["env"]["AWS_CONFIG_FILE"] == "/x/config"
-
-
-async def test_octoprint_key_failure_warns_without_the_key(caplog):
-    async def run(argv, timeout=60, env=None, stdin=None):
-        return RunResult(255, "", "AccessDenied")
-
-    with caplog.at_level(logging.WARNING):
-        assert await api.resolve_octoprint_key({}, run=run) is None
-    assert "OctoPrint" in caplog.text and "AccessDenied" in caplog.text
-
-
-async def test_octoprint_key_empty_output_is_none(caplog):
-    async def run(argv, timeout=60, env=None, stdin=None):
-        return RunResult(0, "\n", "")
-
-    assert await api.resolve_octoprint_key({}, run=run) is None
 
 
 async def test_peer_running_check(tmp_path):

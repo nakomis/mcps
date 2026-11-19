@@ -10,7 +10,7 @@ def store(tmp_path):
 
 def make_job(
     store,
-    host="luke",
+    host="rey",
     sha="a" * 40,
     tags=None,
     position=0,
@@ -22,11 +22,11 @@ def make_job(
 
 
 def test_round_trip(store):
-    job = make_job(store, tags=["samba", "docker"], override=True)
+    job = make_job(store, tags=["web", "docker"], override=True)
     got = store.get_job(job.id)
     assert got == job
     assert got.state == "queued"
-    assert got.tags == ["samba", "docker"]
+    assert got.tags == ["web", "docker"]
     assert got.requesters == ["martin"]
     assert got.override_printer is True
     assert got.detail == {}
@@ -39,9 +39,9 @@ def test_full_run_tags_none(store):
 
 
 def test_request_jobs_share_request_and_position(store):
-    rid = store.create_request(["luke", "leia"], "b" * 40, None, False, "claude")
-    j0 = store.add_job(rid, "luke", "b" * 40, None, 0, False, "claude")
-    j1 = store.add_job(rid, "leia", "b" * 40, None, 1, False, "claude")
+    rid = store.create_request(["rey", "cal"], "b" * 40, None, False, "claude")
+    j0 = store.add_job(rid, "rey", "b" * 40, None, 0, False, "claude")
+    j1 = store.add_job(rid, "cal", "b" * 40, None, 1, False, "claude")
     jobs = store.request_jobs(rid)
     assert [j.id for j in jobs] == [j0.id, j1.id]
     assert [j.position for j in jobs] == [0, 1]
@@ -108,14 +108,14 @@ def test_set_state_rejects_unknown(store):
 
 
 def test_jobs_filters_newest_first(store):
-    a = make_job(store, host="luke")
-    b = make_job(store, host="leia")
-    c = make_job(store, host="luke")
+    a = make_job(store, host="rey")
+    b = make_job(store, host="cal")
+    c = make_job(store, host="rey")
     store.set_state(a.id, "succeeded")
     assert [j.id for j in store.jobs()] == [c.id, b.id, a.id]
-    assert [j.id for j in store.jobs(host="luke")] == [c.id, a.id]
+    assert [j.id for j in store.jobs(host="rey")] == [c.id, a.id]
     assert [j.id for j in store.jobs(states=["queued"])] == [c.id, b.id]
-    assert [j.id for j in store.jobs(host="luke", states=["queued", "succeeded"])] == [
+    assert [j.id for j in store.jobs(host="rey", states=["queued", "succeeded"])] == [
         c.id,
         a.id,
     ]
@@ -138,17 +138,17 @@ def test_recover_interrupted(store):
 
 
 def test_deployed_none_when_empty(store):
-    assert store.deployed("luke") is None
+    assert store.deployed("rey") is None
 
 
 def test_deployed_latest_full_and_per_tag_set(store):
-    store.record_deploy("luke", "s1", None, "2026-01-01T00:00:00Z")
-    store.record_deploy("luke", "s2", ["b", "a"], "2026-01-02T00:00:00Z")
-    store.record_deploy("luke", "s3", None, "2026-01-03T00:00:00Z")
-    store.record_deploy("luke", "s4", ["a", "b"], "2026-01-04T00:00:00Z")
-    store.record_deploy("luke", "s5", ["c"], "2026-01-05T00:00:00Z")
-    store.record_deploy("leia", "x", None, "2026-01-06T00:00:00Z")
-    d = store.deployed("luke")
+    store.record_deploy("rey", "s1", None, "2026-01-01T00:00:00Z")
+    store.record_deploy("rey", "s2", ["b", "a"], "2026-01-02T00:00:00Z")
+    store.record_deploy("rey", "s3", None, "2026-01-03T00:00:00Z")
+    store.record_deploy("rey", "s4", ["a", "b"], "2026-01-04T00:00:00Z")
+    store.record_deploy("rey", "s5", ["c"], "2026-01-05T00:00:00Z")
+    store.record_deploy("cal", "x", None, "2026-01-06T00:00:00Z")
+    d = store.deployed("rey")
     assert d["full"] == {"sha": "s3", "at": "2026-01-03T00:00:00Z"}
     assert d["tagged"] == [
         {"sha": "s4", "tags": ["a", "b"], "at": "2026-01-04T00:00:00Z"},
@@ -157,8 +157,8 @@ def test_deployed_latest_full_and_per_tag_set(store):
 
 
 def test_deployed_tagged_only(store):
-    store.record_deploy("luke", "s1", ["a"], "2026-01-01T00:00:00Z")
-    d = store.deployed("luke")
+    store.record_deploy("rey", "s1", ["a"], "2026-01-01T00:00:00Z")
+    d = store.deployed("rey")
     assert d["full"] is None
     assert d["tagged"] == [{"sha": "s1", "tags": ["a"], "at": "2026-01-01T00:00:00Z"}]
 

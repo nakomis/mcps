@@ -525,7 +525,7 @@ async def deploy(
     override_printer: bool = False,
     requester: str = "",
 ) -> dict:
-    """Ask midichlorian to run the playbook(s) for hosts (luke, leia, cal, mace, rey, cere) at
+    """Ask midichlorian to run the playbook(s) for hosts (cal, mace, rey, cere) at
     a commit of origin/main of home-infra. Returns the job ids at once; the outcome arrives
     later as a message in this session beginning "[midichlorian]", so do not poll.
 
@@ -538,9 +538,7 @@ async def deploy(
         deploys main's head once the commit is on main. Every host of one deploy gets
         the commit the first host deployed.
     tags: limit the run to these playbook tags; omit for a full run.
-    override_printer: run despite a print in progress on a printer-sensitive host (rey, leia,
-        and every luke run, tagged or not, unless all its tags are on the server's
-        hold-free allowlist).
+    override_printer: run despite a print in progress on a printer-sensitive host (rey).
         Only set override_printer when Martin has explicitly said to in this session.
     requester: leave empty; filled in from this session's name.
     """

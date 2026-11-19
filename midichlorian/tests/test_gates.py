@@ -1,7 +1,6 @@
 import httpx
 
-from midichlorian import gates, hosts, remote
-from midichlorian.hosts import HOSTS
+from midichlorian import gates, remote
 from midichlorian.printers import PrinterState, Probes
 
 
@@ -16,7 +15,7 @@ class FakeProbes:
 
 
 BUSY = PrinterState("cthulhu", True, "Cthulhu: Lifting", True)
-IDLE = PrinterState("octoprint", False, "Prusa: Operational", True)
+IDLE = PrinterState("cthulhu", False, "Cthulhu: Idle", True)
 
 
 async def test_rey_waits_when_busy():
@@ -41,19 +40,6 @@ async def test_cal_never_probes():
     assert (await gates.check_printers("cal", None, False, p)).ok and p.calls == 0
 
 
-async def test_luke_tags(monkeypatch):
-    p = FakeProbes(BUSY)
-    # R26: a tagged Luke run holds too, unless every tag is allowlisted
-    assert not (await gates.check_printers("luke", ["print-recordings"], False, p)).ok
-    assert not (await gates.check_printers("luke", ["claude-chats"], False, p)).ok
-    monkeypatch.setattr(hosts, "LUKE_HOLD_FREE_TAGS", frozenset({"claude-chats"}))
-    calls = p.calls
-    assert (await gates.check_printers("luke", ["claude-chats"], False, p)).ok
-    assert p.calls == calls
-    assert not (await gates.check_printers("luke", None, False, p)).ok
-    assert not (await gates.check_printers("luke", ["samba"], False, p)).ok
-
-
 async def test_check_aws_and_docker(monkeypatch):
     seen = []
 
@@ -70,22 +56,6 @@ async def test_check_aws_and_docker(monkeypatch):
     assert seen[1][0] == ["docker", "info"]
 
 
-async def test_backups():
-    def mk(rc, out):
-        async def ssh(host, command, timeout=60, stdin=None):
-            assert host.name == "luke" and command == "./run-backups.sh" and timeout >= 1800
-            return remote.RunResult(rc, out, "")
-
-        return ssh
-
-    assert (await gates.run_luke_backups(mk(0, "All databases backed up and verified\n"))).ok
-    g = await gates.run_luke_backups(mk(0, "nothing"))
-    assert not g.ok
-    lines = "\n".join(f"line{i}" for i in range(50))
-    g = await gates.run_luke_backups(mk(1, lines))
-    assert not g.ok and "line49" in g.reason and "line10" not in g.reason
-
-
 async def test_remote_run_basics():
     assert (await remote.run(["true"])).rc == 0
     assert (await remote.run(["false"])).rc == 1
@@ -97,48 +67,17 @@ async def test_remote_run_basics():
 
 
 async def test_multiple_busy_printers_in_one_reason():
-    other = PrinterState("octoprint", True, "Prusa: Printing", True)
-    g = await gates.check_printers("leia", None, False, FakeProbes(BUSY, other, IDLE))
-    assert "Cthulhu: Lifting" in g.reason and "Prusa: Printing" in g.reason
-    assert "Operational" not in g.reason
-
-
-async def test_backup_success_string_on_stderr():
-    async def ssh(host, command, timeout=60, stdin=None):
-        return remote.RunResult(0, "", "All databases backed up and verified")
-
-    assert (await gates.run_luke_backups(ssh)).ok
+    other = PrinterState("other", True, "Other: Printing", True)
+    g = await gates.check_printers("rey", None, False, FakeProbes(BUSY, other, IDLE))
+    assert "Cthulhu: Lifting" in g.reason and "Other: Printing" in g.reason
+    assert "Idle" not in g.reason
 
 
 # --- the gate with the real probes (R25: unreadable holds, unreachable does not) ---
 
 
-def _real_probes(cthulhu, octo_body="{\"state\": \"Operational\"}", key="k"):
-    async def ssh(host, command, timeout=60, stdin=None):
-        if "docker inspect" in command:
-            return remote.RunResult(0, "true\n", "")
-        return remote.RunResult(0, octo_body, "")
-
-    async def resolver():
-        return key
-
-    client = httpx.AsyncClient(transport=httpx.MockTransport(cthulhu))
-    return Probes(client, HOSTS["leia"], ssh, resolver)
-
-
-def _cthulhu_idle(req):
-    return httpx.Response(200, json={"connected": True, "print": {"statusLabel": "Idle"}})
-
-
-async def test_leia_waits_with_no_key_while_octoprint_runs():
-    g = await gates.check_printers("leia", None, False, _real_probes(_cthulhu_idle, key=None))
-    assert g.wait and "OctoPrint state unreadable: no API key" in g.reason
-
-
-async def test_leia_waits_on_a_403_body():
-    p = _real_probes(_cthulhu_idle, octo_body='{"error": "Forbidden"}')
-    g = await gates.check_printers("leia", None, False, p)
-    assert g.wait and "OctoPrint state unreadable" in g.reason
+def _real_probes(cthulhu):
+    return Probes(httpx.AsyncClient(transport=httpx.MockTransport(cthulhu)))
 
 
 async def test_rey_waits_on_cthulhu_500():

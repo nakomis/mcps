@@ -1,11 +1,9 @@
-"""Pre-run gates: AWS credentials, Docker, printers and Luke's backups."""
+"""Pre-run gates: AWS credentials, Docker, and printers."""
 
 from dataclasses import dataclass
 
-from midichlorian import hosts, remote
+from midichlorian import remote
 from midichlorian.hosts import printer_hold_applies
-
-BACKUP_OK = "All databases backed up and verified"
 
 
 @dataclass(frozen=True)
@@ -49,10 +47,3 @@ async def check_printers(host: str, tags, override: bool, probes) -> GateResult:
         return GateResult(False, True, "printer busy — " + "; ".join(s.detail for s in busy))
     return _ok()
 
-
-async def run_luke_backups(ssh) -> GateResult:
-    r = await ssh(hosts.HOSTS["luke"], "./run-backups.sh", timeout=1800)
-    if r.rc == 0 and BACKUP_OK in r.stdout + r.stderr:
-        return _ok()
-    tail = "\n".join((r.stdout + r.stderr).strip().splitlines()[-20:])
-    return _fail(f"Luke backups failed (rc {r.rc}):\n{tail}")

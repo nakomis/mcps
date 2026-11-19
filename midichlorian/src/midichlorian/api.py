@@ -10,7 +10,6 @@ import asyncio
 import contextlib
 import hmac
 import logging
-import os
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -303,7 +302,6 @@ def create_app(
             gates = {
                 "printer_sensitive": spec.printer_sensitive,
                 "printers": states,
-                "luke_backups": "not reported in v1",
             }
             if states_error:
                 gates["printers_error"] = states_error
@@ -467,7 +465,7 @@ def create_app(
 
     app.include_router(api)
 
-    # --- the web UI (no auth: Leia's mTLS fronts it and injects the token) -------------
+    # --- the web UI (no auth: Mace's gateway fronts it and injects the token) -------------
 
     def static_route(filename: str):
         async def serve():
@@ -485,33 +483,6 @@ def create_app(
 
 
 # --- entry point -----------------------------------------------------------------------
-
-OCTOPRINT_SSM = [
-    "aws", "ssm", "get-parameter",
-    "--name", "/octoprint/api-key",
-    "--with-decryption",
-    "--query", "Parameter.Value",
-    "--output", "text",
-    "--profile", "nakom.is-admin",
-    "--region", "eu-west-2",
-]
-
-
-async def resolve_octoprint_key(env=os.environ, run=remote.run) -> str | None:
-    """The OctoPrint API key: from the environment, else SSM. None (with a warning that
-    never contains the key) when it cannot be had; while OctoPrint is running, the probe
-    then reports its state unreadable, which holds Leia's runs (R25)."""
-    key = env.get("MIDICHLORIAN_OCTOPRINT_KEY", "").strip()
-    if key:
-        return key
-    result = await run(OCTOPRINT_SSM, timeout=30, env=dict(env))
-    key = result.stdout.strip()
-    if result.rc != 0 or not key:
-        why = result.stderr.strip() or f"rc {result.rc}"
-        logger.warning("OctoPrint API key unavailable, Prusa state unreadable: %s", why)
-        return None
-    return key
-
 
 def peer_running_check(settings: Settings, client: httpx.AsyncClient):
     """The Coordinator's `peer_running`: does the peer instance `name` have a running
@@ -534,18 +505,10 @@ def peer_running_check(settings: Settings, client: httpx.AsyncClient):
     return check
 
 
-def build_app(settings: Settings, octoprint_key=resolve_octoprint_key) -> FastAPI:
-    """`octoprint_key` is the async key resolver; Probes calls it lazily, and again while
-    the key is missing."""
+def build_app(settings: Settings) -> FastAPI:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     store = Store(settings.data_dir / "midichlorian.db")
-    probes = Probes(
-        httpx.AsyncClient(),
-        HOSTS["leia"],
-        remote.ssh,
-        octoprint_key,
-        cthulhu_url=settings.cthulhu_url,
-    )
+    probes = Probes(httpx.AsyncClient(), cthulhu_url=settings.cthulhu_url)
     coordinator = Coordinator(
         settings,
         store,

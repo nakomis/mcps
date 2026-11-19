@@ -120,8 +120,6 @@ class FakeSsh:
                 return result
         if "findmnt" in command:
             return RunResult(0, "ro,relatime\n", "")
-        if "StartedAt" in command:
-            return RunResult(0, "2026-10-19T10:00:00Z\n", "")
         return RunResult(0, "", "")
 
     def commands(self, needle):
@@ -146,14 +144,13 @@ class FakeProbes:
 
 
 class FakeGates:
-    """Real printer logic; scripted AWS, Docker and backup results."""
+    """Real printer logic; scripted AWS and Docker results."""
 
     check_printers = staticmethod(gates.check_printers)
 
     def __init__(self):
         self.aws = OK
         self.docker = OK
-        self.backups = OK
         self.calls: list[str] = []
 
     async def check_aws(self, env):
@@ -163,10 +160,6 @@ class FakeGates:
     async def check_docker(self, env):
         self.calls.append("docker")
         return self.docker
-
-    async def run_luke_backups(self, ssh):
-        self.calls.append("backups")
-        return self.backups
 
 
 class FakeClock:
@@ -185,7 +178,7 @@ class World:
         self.tmp = tmp_path
         self.settings = Settings(
             instance="cere",
-            served=frozenset({"luke", "leia", "cal", "mace", "rey"}),
+            served=frozenset({"cal", "mace", "rey"}),
             data_dir=tmp_path / "data",
             repo_dir=tmp_path / "repo",
             repo_url="unused",
@@ -247,7 +240,7 @@ def states(res):
 
 async def test_success_deploys_main_head_and_records_it(w):
     c = w.coordinator()
-    res = await c.submit(["leia"], "b", None, False, "sess-1")
+    res = await c.submit(["rey"], "b", None, False, "sess-1")
     assert states(res) == ["queued"]
     await settle(c)
     job = w.job(res.jobs[0]["job_id"])
@@ -259,7 +252,7 @@ async def test_success_deploys_main_head_and_records_it(w):
     assert job.detail["warnings"] == []
     assert job.detail["failing_task"] is None
     assert job.started and job.finished
-    assert w.store.deployed("leia")["full"]["sha"] == "c"
+    assert w.store.deployed("rey")["full"]["sha"] == "c"
     assert w.ssh.commands("/var/log/midichlorian/deployed") == [
         (
             "sudo -n mkdir -p /var/log/midichlorian && "
@@ -276,7 +269,7 @@ async def test_success_deploys_main_head_and_records_it(w):
     assert log == w.settings.data_dir / "logs" / f"{job.id}.log"
     header = log.read_text().splitlines()[0]
     assert (
-        "leia" in header and "b" in header and "full" in header and "sess-1" in header
+        "rey" in header and "b" in header and "full" in header and "sess-1" in header
     )
     assert "PLAY RECAP" in log.read_text()
 
@@ -390,7 +383,7 @@ async def test_fetch_failure_is_a_warning_when_the_sha_is_known(w):
 
 async def test_not_on_main_is_refused_for_every_host(w):
     c = w.coordinator()
-    res = await c.submit(["leia", "cal"], "x", None, False, "s")
+    res = await c.submit(["rey", "cal"], "x", None, False, "s")
     assert states(res) == ["failed", "failed"]
     assert all(j["reason"] == "not on origin/main" for j in res.jobs)
     assert all(
@@ -422,35 +415,35 @@ async def test_unserved_or_bad_requests_raise(w):
 
 
 async def test_already_deployed_short_circuits_at_submit(w):
-    w.store.record_deploy("leia", "c", None, "2026-10-19T00:00:00Z")
+    w.store.record_deploy("rey", "c", None, "2026-10-19T00:00:00Z")
     c = w.coordinator()
-    res = await c.submit(["leia", "cal"], "b", None, False, "s")
+    res = await c.submit(["rey", "cal"], "b", None, False, "s")
     assert states(res) == ["already", "queued"]
-    leia = w.job(res.jobs[0]["job_id"])
-    assert leia.detail["deployed_sha"] == "c"
+    rey = w.job(res.jobs[0]["job_id"])
+    assert rey.detail["deployed_sha"] == "c"
     await settle(c)
     assert [r["host"] for r in w.runner.calls] == ["cal"]  # later host still runs
     assert w.job(res.jobs[1]["job_id"]).state == "succeeded"
 
 
 async def test_git_error_in_the_already_check_refuses_the_request(w):
-    w.store.record_deploy("leia", "b", None, "2026-10-19T09:00:00Z")
+    w.store.record_deploy("rey", "b", None, "2026-10-19T09:00:00Z")
     c = w.coordinator()
 
     async def broken(repo, a, b):
         raise GitError("fatal: bad object")
 
     w.git.is_ancestor = broken
-    res = await c.submit(["leia", "cal"], "c", None, False, "s")
+    res = await c.submit(["rey", "cal"], "c", None, False, "s")
     assert states(res) == ["failed", "failed"]
     assert all("git error: fatal: bad object" in j["reason"] for j in res.jobs)
 
 
 async def test_every_host_already_deployed_returns_at_once(w):
-    w.store.record_deploy("leia", "c", None, "2026-10-19T00:00:00Z")
+    w.store.record_deploy("rey", "c", None, "2026-10-19T00:00:00Z")
     w.store.record_deploy("cal", "c", None, "2026-10-19T00:00:00Z")
     c = w.coordinator()
-    res = await c.submit(["leia", "cal"], "c", None, False, "s")
+    res = await c.submit(["rey", "cal"], "c", None, False, "s")
     assert states(res) == ["already", "already"]
     await settle(c)
     assert w.runner.calls == []
@@ -480,16 +473,16 @@ async def test_already_is_rechecked_when_the_job_reaches_the_front(w):
 async def test_first_host_fails_later_hosts_skipped(w):
     w.runner.results["rey"] = (FAILED, 2)
     c = w.coordinator()
-    res = await c.submit(["rey", "leia", "cal"], "c", None, False, "sess-a")
+    res = await c.submit(["rey", "mace", "cal"], "c", None, False, "sess-a")
     await settle(c)
-    rey, leia, cal = (w.job(j["job_id"]) for j in res.jobs)
+    rey, mace, cal = (w.job(j["job_id"]) for j in res.jobs)
     assert rey.state == "failed"
     assert rey.detail["failing_task"] == "Create the plex mount point"
     assert "fatal: [host-c]" in rey.detail["log_tail"]
     assert rey.detail["log_tail"].splitlines()[-1] == "EXIT 2"
     assert w.store.deployed("rey") is None
     assert w.ssh.commands("/var/log/midichlorian/deployed") == []
-    for later in (leia, cal):
+    for later in (mace, cal):
         assert later.state == "skipped"
         assert "rey" in later.detail["reason"]
         assert later.requesters == ["sess-a"]
@@ -548,7 +541,7 @@ async def test_internal_error_after_the_run_keeps_the_log_tail(w, monkeypatch):
 async def test_finished_jobs_leave_no_recheck_entries(w):
     w.probes.busy = True
     c = w.coordinator()
-    job_id = (await c.submit(["leia"], "c", None, False, "s")).jobs[0]["job_id"]
+    job_id = (await c.submit(["rey"], "c", None, False, "s")).jobs[0]["job_id"]
     await settle(c)
     assert job_id in c._recheck_at
     w.gates.aws = GateResult(False, False, "ExpiredToken")  # fails at the next re-check
@@ -575,7 +568,7 @@ async def test_runner_crash_fails_the_job_and_cleans_up(w):
 async def test_printer_busy_waits_then_runs_when_idle(w):
     w.probes.busy = True
     c = w.coordinator()
-    res = await c.submit(["leia"], "c", None, False, "s")
+    res = await c.submit(["rey"], "c", None, False, "s")
     await settle(c)
     job = w.job(res.jobs[0]["job_id"])
     assert job.state == "waiting"
@@ -614,9 +607,9 @@ async def test_printer_override_runs_through_a_busy_printer(w):
 async def test_waiting_job_holds_its_host(w):
     w.probes.busy = True
     c = w.coordinator()
-    first = await c.submit(["leia"], "c", None, False, "s1")
+    first = await c.submit(["rey"], "c", None, False, "s1")
     second = await c.submit(
-        ["leia", "cal"], "c", None, False, "s2"
+        ["rey", "cal"], "c", None, False, "s2"
     )  # not merged: multi-host; and no override, so it does not pass the held job
     await settle(c)
     assert w.job(first.jobs[0]["job_id"]).state == "waiting"
@@ -627,10 +620,10 @@ async def test_waiting_job_holds_its_host(w):
 async def test_override_request_passes_a_job_held_for_the_printer(w):
     w.probes.busy = True
     c = w.coordinator()
-    held = (await c.submit(["leia"], "c", None, False, "s1")).jobs[0]["job_id"]
+    held = (await c.submit(["rey"], "c", None, False, "s1")).jobs[0]["job_id"]
     await settle(c)
     assert w.job(held).state == "waiting"
-    over = (await c.submit(["leia"], "c", None, True, "martin")).jobs[0]["job_id"]
+    over = (await c.submit(["rey"], "c", None, True, "martin")).jobs[0]["job_id"]
     await settle(c)
     assert w.job(over).state == "succeeded"
     assert w.job(held).state == "waiting"  # still held: Martin authorised only his run
@@ -647,33 +640,22 @@ async def test_aws_gate_failure_fails_at_once(w):
     assert w.runner.calls == []
 
 
-async def test_luke_backups_run_last_and_failure_leaves_luke_untouched(w):
-    w.gates.backups = GateResult(False, False, "Luke backups failed (rc 1)")
-    c = w.coordinator()
-    res = await c.submit(["luke"], "c", ["claude-chats"], False, "s")
-    await settle(c)
-    job = w.job(res.jobs[0]["job_id"])
-    assert job.state == "failed" and "Luke backups failed" in job.detail["reason"]
-    assert w.gates.calls == ["aws", "docker", "backups"]
-    assert w.runner.calls == [] and w.git.worktrees == {}
-
-
 async def test_docker_gate_only_for_controller_side_builds(w):
     w.gates.docker = GateResult(False, False, "Cannot connect to the Docker daemon")
     c = w.coordinator()
     res = {
         h: await c.submit([h], "c", None, False, "s")
-        for h in ("rey", "cal", "leia", "mace")
+        for h in ("rey", "cal", "mace")
     }
     await settle(c)
-    for h in ("rey", "cal", "leia"):
+    for h in ("rey", "cal"):
         job = w.job(res[h].jobs[0]["job_id"])
         assert job.state == "failed" and "Docker gate" in job.detail["reason"], h
     assert w.job(res["mace"].jobs[0]["job_id"]).state == "succeeded"
-    assert w.gates.calls.count("docker") == 3
+    assert w.gates.calls.count("docker") == 2
 
 
-async def test_cancel_during_gates_never_starts_luke_backups(w):
+async def test_cancel_during_gates_never_starts_the_run(w):
     release = asyncio.Event()
 
     async def slow_docker(env):
@@ -683,45 +665,24 @@ async def test_cancel_during_gates_never_starts_luke_backups(w):
 
     w.gates.check_docker = slow_docker
     c = w.coordinator()
-    job_id = (await c.submit(["luke"], "c", ["x"], False, "s")).jobs[0]["job_id"]
+    job_id = (await c.submit(["rey"], "c", ["x"], False, "s")).jobs[0]["job_id"]
     await c.tick()
     await until(lambda: "docker" in w.gates.calls)
     assert c.cancel(job_id)
     release.set()
     await settle(c)
-    assert "backups" not in w.gates.calls
-    assert w.job(job_id).state == "cancelled"
-
-
-async def test_printer_rechecked_after_luke_backups(w):
-    async def backups_while_a_print_starts(ssh):
-        w.gates.calls.append("backups")
-        w.probes.busy = True  # a print started during the (long) backups
-        return OK
-
-    w.gates.run_luke_backups = backups_while_a_print_starts
-    c = w.coordinator()
-    job_id = (await c.submit(["luke"], "c", None, False, "s")).jobs[0]["job_id"]
-    await settle(c)
-    job = w.job(job_id)
-    assert job.state == "waiting" and "printer busy" in job.detail["gate"]
     assert w.runner.calls == []
-    w.probes.busy = False
-    w.gates.run_luke_backups = FakeGates.run_luke_backups.__get__(w.gates)
-    w.clock.advance(61)
-    await settle(c)
-    assert w.job(job_id).state == "succeeded"
-    assert w.gates.calls.count("backups") == 2  # backups re-run before the real run
+    assert w.job(job_id).state == "cancelled"
 
 
 async def test_gate_passes_are_logged(w):
     c = w.coordinator()
-    job_id = (await c.submit(["luke"], "c", None, False, "s")).jobs[0]["job_id"]
+    job_id = (await c.submit(["rey"], "c", ["x"], False, "s")).jobs[0]["job_id"]
     await settle(c)
     log = Path(w.job(job_id).log_path).read_text()
-    for line in ("AWS ok", "printers idle", "Docker ok", "Luke's backups ok"):
+    for line in ("AWS ok", "printers idle", "Docker ok"):
         assert f"[midichlorian] {line}" in log, line
-    over = (await c.submit(["rey"], "c", None, True, "s")).jobs[0]["job_id"]
+    over = (await c.submit(["rey"], "c", ["y"], True, "s")).jobs[0]["job_id"]
     await settle(c)
     assert "printer hold overridden by Martin" in Path(w.job(over).log_path).read_text()
 
@@ -732,14 +693,14 @@ async def test_gate_passes_are_logged(w):
 async def test_second_request_for_running_host_queues_behind_it(w):
     w.runner.gate = asyncio.Event()
     c = w.coordinator()
-    first = await c.submit(["leia"], "c", None, False, "s1")
+    first = await c.submit(["rey"], "c", None, False, "s1")
     await c.tick()
     await until(lambda: w.runner.active == 1)
     first_id = first.jobs[0]["job_id"]
     assert w.job(first_id).state == "running"
 
     w.git.remote.append("d")
-    second = await c.submit(["leia"], "d", None, False, "s2")
+    second = await c.submit(["rey"], "d", None, False, "s2")
     second_id = second.jobs[0]["job_id"]
     assert second_id != first_id and not second.jobs[0]["merged"]
     assert second.jobs[0]["state"] == "queued"
@@ -759,23 +720,23 @@ async def test_second_request_for_running_host_queues_behind_it(w):
 
 
 async def test_request_during_gate_checks_neither_merges_nor_starts(w):
-    """A job still in its gates (Luke's backups take minutes) is not yet `running`,
+    """A job still in its gates (a slow Docker check) is not yet `running`,
     but it owns its host: a new request must not join it or start beside it."""
     release = asyncio.Event()
 
-    async def slow_backups(ssh):
-        w.gates.calls.append("backups")
+    async def slow_docker(env):
+        w.gates.calls.append("docker")
         await release.wait()
         return OK
 
-    w.gates.run_luke_backups = slow_backups
+    w.gates.check_docker = slow_docker
     c = w.coordinator()
-    first = await c.submit(["luke"], "c", ["x"], False, "s1")
+    first = await c.submit(["rey"], "c", ["x"], False, "s1")
     await c.tick()
-    await until(lambda: "backups" in w.gates.calls)
+    await until(lambda: "docker" in w.gates.calls)
     assert w.job(first.jobs[0]["job_id"]).state == "queued"
 
-    second = await c.submit(["luke"], "c", None, False, "s2")
+    second = await c.submit(["rey"], "c", None, False, "s2")
     assert (
         second.jobs[0]["job_id"] != first.jobs[0]["job_id"]
     )  # no merge: its gates saw ["x"]
@@ -794,24 +755,24 @@ async def test_request_during_gate_checks_neither_merges_nor_starts(w):
 async def test_different_hosts_run_concurrently(w):
     w.runner.gate = asyncio.Event()
     c = w.coordinator()
-    await c.submit(["leia"], "c", None, False, "s1")
+    await c.submit(["rey"], "c", None, False, "s1")
     await c.submit(["cal"], "c", None, False, "s2")
     await c.tick()
     await until(lambda: w.runner.active == 2)
     w.runner.gate.set()
     await settle(c)
-    assert {r["host"] for r in w.runner.calls} == {"leia", "cal"}
+    assert {r["host"] for r in w.runner.calls} == {"rey", "cal"}
 
 
 async def test_queued_request_merges_into_queued_job(w):
     c = w.coordinator()
-    first = await c.submit(["leia"], "b", ["x"], False, "s1")
-    second = await c.submit(["leia"], "c", ["y"], False, "s2")
+    first = await c.submit(["rey"], "b", ["x"], False, "s1")
+    second = await c.submit(["rey"], "c", ["y"], False, "s2")
     job_id = first.jobs[0]["job_id"]
     assert second.jobs[0]["job_id"] == job_id and second.jobs[0]["merged"]
     job = w.job(job_id)
     assert job.requesters == ["s1", "s2"] and job.sha == "c" and job.tags == ["x", "y"]
-    older = await c.submit(["leia"], "a", None, False, "s3")
+    older = await c.submit(["rey"], "a", None, False, "s3")
     job = w.job(job_id)
     assert older.jobs[0]["job_id"] == job_id and job.sha == "c" and job.tags is None
     await settle(c)
@@ -820,25 +781,25 @@ async def test_queued_request_merges_into_queued_job(w):
 
 async def test_override_and_non_override_requests_never_merge(w):
     c = w.coordinator()
-    over = await c.submit(["luke"], "c", ["samba"], True, "s1")
-    plain = await c.submit(["luke"], "c", None, False, "s2")
+    over = await c.submit(["rey"], "c", ["x"], True, "s1")
+    plain = await c.submit(["rey"], "c", None, False, "s2")
     assert plain.jobs[0]["job_id"] != over.jobs[0]["job_id"]
     assert not plain.jobs[0]["merged"]
-    assert w.job(over.jobs[0]["job_id"]).tags == ["samba"]
+    assert w.job(over.jobs[0]["job_id"]).tags == ["x"]
     assert w.job(plain.jobs[0]["job_id"]).override_printer is False
-    again = await c.submit(["luke"], "c", ["y"], True, "s3")  # same override: merges
+    again = await c.submit(["rey"], "c", ["y"], True, "s3")  # same override: merges
     assert again.jobs[0]["job_id"] == over.jobs[0]["job_id"]
 
 
 async def test_multi_host_request_does_not_merge_its_first_host(w):
     c = w.coordinator()
-    first = await c.submit(["leia"], "c", None, False, "s1")
-    second = await c.submit(["leia", "cal"], "c", None, False, "s2")
+    first = await c.submit(["rey"], "c", None, False, "s1")
+    second = await c.submit(["rey", "cal"], "c", None, False, "s2")
     assert second.jobs[0]["job_id"] != first.jobs[0]["job_id"]
     await settle(c)
-    # the second request's own leia job finds leia already at c, then cal runs
+    # the second request's own rey job finds rey already at c, then cal runs
     assert w.job(second.jobs[0]["job_id"]).state == "already"
-    assert [r["host"] for r in w.runner.calls] == ["leia", "cal"]
+    assert [r["host"] for r in w.runner.calls] == ["rey", "cal"]
 
 
 # --- cancel ------------------------------------------------------------------------------
@@ -847,10 +808,10 @@ async def test_multi_host_request_does_not_merge_its_first_host(w):
 async def test_cancel_queued_but_not_running(w):
     w.runner.gate = asyncio.Event()
     c = w.coordinator()
-    a = (await c.submit(["leia"], "c", None, False, "s1")).jobs[0]["job_id"]
+    a = (await c.submit(["rey"], "c", None, False, "s1")).jobs[0]["job_id"]
     await c.tick()
     await until(lambda: w.runner.active == 1)
-    b = (await c.submit(["leia", "cal"], "c", None, False, "s2")).jobs
+    b = (await c.submit(["rey", "cal"], "c", None, False, "s2")).jobs
     assert c.cancel(a) is False  # running
     assert c.cancel(b[0]["job_id"]) is True
     assert c.cancel(b[0]["job_id"]) is False  # already cancelled
@@ -886,11 +847,11 @@ async def test_cancel_during_gates_stays_cancelled(w):
 
 
 async def test_restart_marks_running_interrupted_and_queue_continues(w):
-    rid = w.store.create_request(["leia"], "c", None, False, "old")
-    stuck = w.store.add_job(rid, "leia", "c", None, 0, False, "old")
+    rid = w.store.create_request(["rey"], "c", None, False, "old")
+    stuck = w.store.add_job(rid, "rey", "c", None, 0, False, "old")
     w.store.set_state(stuck.id, "running", started="2026-10-19T11:00:00Z")
-    rid2 = w.store.create_request(["leia"], "c", None, False, "next")
-    nxt = w.store.add_job(rid2, "leia", "c", None, 0, False, "next")
+    rid2 = w.store.create_request(["rey"], "c", None, False, "next")
+    nxt = w.store.add_job(rid2, "rey", "c", None, 0, False, "next")
     stale = w.settings.data_dir / "worktrees" / str(stuck.id)
     stale.mkdir(parents=True)
 
@@ -913,16 +874,16 @@ A, B, C, D = ("a" * 40, "b" * 40, "c" * 40, "d" * 40)
 async def test_later_hosts_deploy_the_commit_the_first_host_deployed(w):
     w.runner.gate = asyncio.Event()
     c = w.coordinator()
-    res = await c.submit(["luke", "leia"], "main", None, False, "s")
+    res = await c.submit(["rey", "cal"], "main", None, False, "s")
     await c.tick()
     await until(lambda: w.runner.active == 1)
-    w.git.remote.append("d")  # another session merges while Luke runs
+    w.git.remote.append("d")  # another session merges while the first host runs
     w.runner.gate.set()
     await settle(c, rounds=4)
-    luke, leia = (w.job(j["job_id"]) for j in res.jobs)
-    assert (luke.state, leia.state) == ("succeeded", "succeeded")
-    assert luke.detail["deployed_sha"] == "c"
-    assert leia.detail["deployed_sha"] == "c"  # not main's new head, d
+    rey, cal = (w.job(j["job_id"]) for j in res.jobs)
+    assert (rey.state, cal.state) == ("succeeded", "succeeded")
+    assert rey.detail["deployed_sha"] == "c"
+    assert cal.detail["deployed_sha"] == "c"  # not main's new head, d
     assert [call["sha"] for call in w.runner.calls] == ["c", "c"]
 
 
@@ -951,13 +912,13 @@ async def test_full_sha_older_than_a_deployed_host_is_already(w):
 async def test_pinned_request_never_merges(w):
     w.git = FakeGit(history=(A, B, C))
     w.runner.git = w.git
-    w.probes.busy = True  # hold leia so the first job stays queued/waiting
+    w.probes.busy = True  # hold rey so the first job stays queued/waiting
     c = w.coordinator()
-    first = await c.submit(["leia"], "main", None, False, "s1")
+    first = await c.submit(["rey"], "main", None, False, "s1")
     await settle(c)
-    second = await c.submit(["leia"], B, None, False, "s2")
+    second = await c.submit(["rey"], B, None, False, "s2")
     assert not second.jobs[0]["merged"]
-    third = await c.submit(["leia"], "main", None, False, "s3")
+    third = await c.submit(["rey"], "main", None, False, "s3")
     assert third.jobs[0]["merged"] and third.jobs[0]["job_id"] == first.jobs[0]["job_id"]
 
 
@@ -1031,8 +992,8 @@ async def test_cancelled_run_task_leaves_its_worktree_for_the_playbook(w):
 
 
 async def test_restart_keeps_a_live_playbooks_worktree(w, monkeypatch):
-    rid = w.store.create_request(["leia"], "c", None, False, "old")
-    alive = w.store.add_job(rid, "leia", "c", None, 0, False, "old")
+    rid = w.store.create_request(["rey"], "c", None, False, "old")
+    alive = w.store.add_job(rid, "rey", "c", None, 0, False, "old")
     w.store.set_state(alive.id, "running", started="2026-10-19T11:00:00Z")
     trees = w.settings.data_dir / "worktrees"
     live, dead = trees / str(alive.id), trees / "999"
@@ -1041,7 +1002,7 @@ async def test_restart_keeps_a_live_playbooks_worktree(w, monkeypatch):
     (trees / f"{alive.id}.pid").write_text(f"{os.getpid()}\n")  # a process that exists
     (trees / "999.pid").write_text("999999999\n")  # one that does not
     monkeypatch.setattr(
-        runner_module, "_command_of", lambda pid: f"bash {live}/scripts/leia-ansible.sh"
+        runner_module, "_command_of", lambda pid: f"bash {live}/scripts/rey-ansible.sh"
     )
 
     c = w.coordinator()
@@ -1054,7 +1015,7 @@ async def test_restart_keeps_a_live_playbooks_worktree(w, monkeypatch):
 # --- an orphaned playbook still holds its host (Residual 6) --------------------------------
 
 
-def _orphan(w, host="luke", pid=None):
+def _orphan(w, host="rey", pid=None):
     """An interrupted job whose playbook's pid file is still on disk."""
     rid = w.store.create_request([host], "c", None, False, "old")
     old = w.store.add_job(rid, host, "c", None, 0, False, "old")
@@ -1069,10 +1030,10 @@ async def test_interrupted_job_with_a_live_playbook_holds_its_host(w, monkeypatc
     old = _orphan(w)
     own = w.settings.data_dir / "worktrees" / str(old.id)
     monkeypatch.setattr(
-        runner_module, "_command_of", lambda pid: f"bash {own}/scripts/luke-ansible.sh"
+        runner_module, "_command_of", lambda pid: f"bash {own}/scripts/rey-ansible.sh"
     )
     c = w.coordinator()
-    job_id = (await c.submit(["luke"], "c", None, False, "s")).jobs[0]["job_id"]
+    job_id = (await c.submit(["rey"], "c", None, False, "s")).jobs[0]["job_id"]
     other = (await c.submit(["cal"], "c", None, False, "s")).jobs[0]["job_id"]
     await settle(c)
     held = w.job(job_id)
@@ -1091,7 +1052,7 @@ async def test_interrupted_job_with_a_live_playbook_holds_its_host(w, monkeypatc
 async def test_interrupted_job_with_a_dead_playbook_does_not_hold(w):
     _orphan(w, pid=999999999)
     c = w.coordinator()
-    job_id = (await c.submit(["luke"], "c", None, False, "s")).jobs[0]["job_id"]
+    job_id = (await c.submit(["rey"], "c", None, False, "s")).jobs[0]["job_id"]
     await settle(c)
     assert w.job(job_id).state == "succeeded"
 
@@ -1100,7 +1061,7 @@ async def test_reused_pid_with_another_command_does_not_hold(w, monkeypatch):
     monkeypatch.setattr(runner_module, "_command_of", lambda pid: "/usr/sbin/cupsd -l")
     _orphan(w)
     c = w.coordinator()
-    job_id = (await c.submit(["luke"], "c", None, False, "s")).jobs[0]["job_id"]
+    job_id = (await c.submit(["rey"], "c", None, False, "s")).jobs[0]["job_id"]
     await settle(c)
     assert w.job(job_id).state == "succeeded"
 
@@ -1134,7 +1095,7 @@ async def test_skipped_pinned_job_skips_the_later_hosts(w):
     _abc(w)
     w.store.record_deploy("cal", C, ["x"], "2026-10-19T09:00:00Z")
     c = w.coordinator()
-    res = await c.submit(["cal", "leia"], B, None, False, "s")
+    res = await c.submit(["cal", "rey"], B, None, False, "s")
     await settle(c)
     assert [w.job(j["job_id"]).state for j in res.jobs] == ["skipped", "skipped"]
     assert w.runner.calls == []
@@ -1168,9 +1129,9 @@ async def test_pinned_older_with_disjoint_tags_runs(w):
 
 async def test_continuation_pinned_older_than_a_tagged_deploy_is_skipped(w):
     _abc(w)
-    w.store.record_deploy("leia", C, ["x"], "2026-10-19T09:00:00Z")
+    w.store.record_deploy("rey", C, ["x"], "2026-10-19T09:00:00Z")
     c = w.coordinator()
-    res = await c.submit(["cal", "leia"], B, None, False, "s")  # explicit sha: pinned
+    res = await c.submit(["cal", "rey"], B, None, False, "s")  # explicit sha: pinned
     await settle(c)
     assert w.job(res.jobs[0]["job_id"]).state == "succeeded"
     assert w.job(res.jobs[1]["job_id"]).state == "skipped"
@@ -1181,10 +1142,10 @@ async def test_a_playbook_of_another_run_does_not_hold(w, monkeypatch):
     old = _orphan(w)
     other = w.settings.data_dir / "worktrees" / str(old.id + 1)
     monkeypatch.setattr(
-        runner_module, "_command_of", lambda pid: f"bash {other}/scripts/luke-ansible.sh"
+        runner_module, "_command_of", lambda pid: f"bash {other}/scripts/rey-ansible.sh"
     )
     c = w.coordinator()
-    job_id = (await c.submit(["luke"], "c", None, False, "s")).jobs[0]["job_id"]
+    job_id = (await c.submit(["rey"], "c", None, False, "s")).jobs[0]["job_id"]
     await settle(c)
     assert w.job(job_id).state == "succeeded"
 
@@ -1285,7 +1246,7 @@ async def test_drain_waits_for_the_running_playbook_and_starts_nothing_new(w, ca
     running = (await c.submit(["cal"], "c", None, False, "s")).jobs[0]["job_id"]
     await c.tick()
     await until(lambda: w.runner.active == 1)
-    later = (await c.submit(["leia"], "c", None, False, "s")).jobs[0]["job_id"]
+    later = (await c.submit(["rey"], "c", None, False, "s")).jobs[0]["job_id"]
 
     drained = asyncio.create_task(c.drain_for_shutdown(interval=0.01))
     await asyncio.sleep(0.05)
@@ -1313,7 +1274,7 @@ async def test_drain_cancels_a_job_still_in_its_gates(w):
 
     w.gates.check_aws = slow_aws
     c = w.coordinator()
-    job_id = (await c.submit(["leia"], "c", None, False, "s")).jobs[0]["job_id"]
+    job_id = (await c.submit(["rey"], "c", None, False, "s")).jobs[0]["job_id"]
     await c.tick()
     await asyncio.wait_for(started.wait(), 5)
     await asyncio.wait_for(c.drain_for_shutdown(interval=0.01), 5)  # does not wait on the gate

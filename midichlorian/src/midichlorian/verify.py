@@ -3,12 +3,9 @@
 import shlex
 from dataclasses import dataclass
 
-from midichlorian.hosts import HOSTS, HostSpec
+from midichlorian.hosts import HostSpec
 
 PS_CMD = "docker ps -a --format '{{.Names}}|{{.State}}'"
-SAMBA_CMD = "docker inspect -f '{{.State.StartedAt}}' samba"
-CIFS_PATH = "/mnt/print-recordings"
-CIFS_HOSTS = ("rey", "leia", "mace")
 
 
 @dataclass(frozen=True)
@@ -49,20 +46,13 @@ async def _containers(host: HostSpec, ssh) -> tuple[dict | None, str]:
     }, ""
 
 
-async def _samba_started(host: HostSpec, ssh) -> str | None:
-    res = await ssh(host, SAMBA_CMD)
-    return res.stdout.strip() if res.rc == 0 and res.stdout.strip() else None
-
-
 async def snapshot(host: HostSpec, ssh) -> dict:
-    snap: dict = {"containers": {}, "samba_started": None}
+    snap: dict = {"containers": {}}
     if host.docker:
         containers, error = await _containers(host, ssh)
         snap["containers"] = containers or {}
         if error:
             snap["error"] = error
-        if host.name == "luke":
-            snap["samba_started"] = await _samba_started(host, ssh)
     return snap
 
 
@@ -106,25 +96,7 @@ async def _check_containers(host, before, ssh) -> Check:
     return Check("containers", not problems, "; ".join(problems) or f"{len(now)} checked")
 
 
-async def _check_cifs(name: str, ssh, rey_printing: bool) -> Check:
-    label = f"cifs {name}"
-    host = HOSTS[name]
-    res = await ssh(host, f"timeout 10 ls {CIFS_PATH}")
-    if res.rc == 0:
-        return Check(label, True, "readable")
-    if "Stale file handle" not in res.stderr + res.stdout:
-        return Check(label, False, _err(res))
-    if name == "rey" and rey_printing:
-        return Check(label, True, "stale; remount deferred — printing")
-    um = await ssh(host, f"sudo umount -l -t cifs {CIFS_PATH}")
-    if um.rc != 0:
-        return Check(label, False, f"stale; umount failed: {_err(um)}")
-    return Check(label, True, "stale; unmounted, will remount on next access")
-
-
-async def run_checks(
-    host: HostSpec, before: dict, ssh, *, rey_printing: bool = False
-) -> list[Check]:
+async def run_checks(host: HostSpec, before: dict, ssh) -> list[Check]:
     checks: list[Check] = []
     if host.ro_root:
         checks.append(await _check_ro_root(host, ssh))
@@ -132,22 +104,4 @@ async def run_checks(
         checks.append(await _check_units(host, ssh))
     if host.docker:
         checks.append(await _check_containers(host, before, ssh))
-    if host.name == "luke":
-        started = await _samba_started(host, ssh)
-        old = before.get("samba_started")
-        if started is None:
-            checks.append(Check("samba", False, "could not read samba StartedAt"))
-        else:
-            if old is None:
-                checks.append(
-                    Check("samba", True, "baseline StartedAt unreadable; restart not assessed")
-                )
-            else:
-                restarted = started != old
-                checks.append(
-                    Check("samba", True, "restarted" if restarted else "not restarted")
-                )
-            if old is not None and started != old:
-                for name in CIFS_HOSTS:
-                    checks.append(await _check_cifs(name, ssh, rey_printing))
     return checks
